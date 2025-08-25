@@ -1,0 +1,9 @@
+[project]
+name = "sms2vec"
+version = "0.1.0"
+description = "短信特征工程与模型训练推理"
+authors = ["zyaztec"]
+requires-python = ">=3.8"
+
+[tool.uv]
+virtualenvs.in-project = true
