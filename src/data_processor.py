@@ -33,12 +33,16 @@ class DataProcessor:
                  use_aes: bool = False,
                  aes_key: bytes | None = None,
                  aes_iv: bytes | None = None,
-                 set_cn_stopwords: bool = False, 
                  additional_stopwords: set[str] | None = None,
                  filter_messages_setting: dict | None = None,
                  static_vec: str | None = None,
                  dynamic_vec: str | None = None,
+                 w2v_config: dict = {},
+                 tf_idf_config: dict = {},
                  language: str = 'cn'):
+
+        today = datetime.datetime.now().strftime('%Y%m%d')
+        self.logger = LoggerManager.get_logger()
 
         self.root_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -46,24 +50,33 @@ class DataProcessor:
         self.aes_key = aes_key
         self.aes_iv = aes_iv
 
-        if set_cn_stopwords:
+        if language == 'cn':
+            self.logger.info('Setting Chinese stopwords')
             self.stop_words_path = f'{self.root_path}/data/resources/cn_stopwords.txt'
         else:
+            self.logger.info('Setting English stopwords')
             self.stop_words_path = f'{self.root_path}/data/resources/en_stopwords.txt'
         with open(self.stop_words_path, encoding='utf-8') as f:
             self.stopwords = set(line.strip() for line in f)
 
         if additional_stopwords:
+            self.logger.info(f'Adding {len(additional_stopwords)} additional stopwords')
             self.stopwords = self.stopwords | additional_stopwords
 
         self.filter_messages_setting = filter_messages_setting
         self.static_vec = static_vec
         self.dynamic_vec = dynamic_vec
+        self.w2v_config = w2v_config
+        self.tf_idf_config = tf_idf_config
+
+        self.static_vec_model_path = f'{self.root_path}/model/static_vec'
+        os.makedirs(self.static_vec_model_path, exist_ok=True)
+
         self.language = language
 
-        self.logger = LoggerManager.get_logger()
-
     def aes_encrypt(self, text: str) -> str:
+        if not isinstance(enc_text, str) or pd.isna(enc_text):
+            raise ValueError("Input to aes_encrypt must be a non-empty string")
         cipher = AES.new(self.aes_key, AES.MODE_CBC, self.aes_iv)
         padded_text = pad(text.encode('utf-8'), AES.block_size)
         encrypted = cipher.encrypt(padded_text)
@@ -140,7 +153,7 @@ class DataProcessor:
             has_verification_en = data['message'].str.contains('verification code', case=False, na=False)
             has_verification = has_verification_cn | has_verification_en
             
-            self.logger.info(f"Filter configuration: keywords_to_remove={filter_messages_setting.get('keywords_to_remove')}, keep_keywords={filter_messages_setting.get('keep_keywords')}, keep_verification={keep_verification}")
+            self.logger.info(f"SMS filter configuration: keywords_to_remove={filter_messages_setting.get('keywords_to_remove')}, keep_keywords={filter_messages_setting.get('keep_keywords')}, keep_verification={keep_verification}")
 
             df_keep = data[keep_mask]
             if keep_verification:
@@ -177,9 +190,9 @@ class DataProcessor:
             return True
         return all(char in chinese_punctuation + english_punctuation for char in word)
 
-    def encode_texts_batch(self, texts, tokenizer, model, batch_size=32, is_training=True):
+    def encode_texts_batch(self, texts, tokenizer, model, batch_size=32):
         all_embeddings = []
-        for i in tqdm(range(0, len(texts), batch_size), desc="batch encoding"):
+        for i in tqdm(range(0, len(texts), batch_size), desc=f"Dynamic Model Encoding: {self.dynamic_vec}", leave=True, dynamic_ncols=True):
             batch_texts = texts[i:i+batch_size]
             inputs = tokenizer(batch_texts, return_tensors="pt", truncation=True, padding=True, max_length=128)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
@@ -189,24 +202,35 @@ class DataProcessor:
             all_embeddings.extend(cls_embeddings)
         return all_embeddings
 
-    def embedding_pooling(self, df):
-        embedding_columns = [col for col in df.columns if col.startswith('embedding_')]
-        if not embedding_columns:
-            self.logger.warning("没有找到embedding列")
-            return df[['phone']].drop_duplicates()
-        result = df.groupby('phone')[embedding_columns].mean().reset_index()
-        self.logger.info(f'Embedding聚合完成，用户数: {len(result)}, 特征维度: {len(embedding_columns)}')
-        return result
+    def embedding_pooling(self, data: pd.DataFrame, pooling: str = 'mean') -> pd.DataFrame:
+        """
+        Pooling embeddings for each user using the specified pooling method.
 
-    # def concat_embedding_tfidf(self, embedding_df, tfidf_df):
-    #     embedding_df['phone'] = embedding_df['phone'].astype(object)
-    #     tfidf_df['phone'] = tfidf_df['phone'].astype(object)
-    #     merged_df = embedding_df.merge(
-    #             tfidf_df.drop(['area_code'], axis=1, errors='ignore'), 
-    #             on=['phone'], 
-    #             how='inner'
-    #         )
-    #     return merged_df
+        Args:
+            data (pd.DataFrame): DataFrame containing 'id' and embedding columns.
+            pooling (str): Pooling method, one of ['mean', 'max', 'min', 'sum'].
+
+        Returns:
+            pd.DataFrame: DataFrame with pooled embeddings per user.
+        """
+        embedding_columns = [col for col in data.columns if col.startswith('embedding_')]
+        if not embedding_columns:
+            self.logger.warning("Cannot find any embedding columns in DataFrame.")
+            return data[['id']].drop_duplicates()
+        if pooling == 'mean':
+            result = data.groupby('id')[embedding_columns].mean().reset_index()
+        elif pooling == 'max':
+            result = data.groupby('id')[embedding_columns].max().reset_index()
+        elif pooling == 'min':
+            result = data.groupby('id')[embedding_columns].min().reset_index()
+        elif pooling == 'sum':
+            result = data.groupby('id')[embedding_columns].sum().reset_index()
+        else:
+            self.logger.warning(f"Unknown pooling method '{pooling}', defaulting to mean.")
+            result = data.groupby('id')[embedding_columns].mean().reset_index()
+        self.logger.info(f'Embedding pooling ({pooling}) completed, unique user count: {len(result)}, feature dimension: {len(embedding_columns)}')
+        return result  
+    
 
     def create_time_features(self, df):
         df['datetime'] = pd.to_datetime(df['datetime'], format='mixed')
@@ -215,27 +239,27 @@ class DataProcessor:
         df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
         df['is_work_time'] = df['hour'].between(9, 17).astype(int)
         df['is_night'] = df['hour'].apply(lambda x: 1 if x >= 22 or x < 6 else 0)
-        user_time_features = df.groupby('phone').agg({
+        user_time_features = df.groupby('id').agg({
             'hour': ['mean', 'std', 'nunique'],
             'day_of_week': ['nunique'],
             'is_weekend': ['mean', 'sum'],
             'is_work_time': ['mean', 'sum'],
             'is_night': ['mean', 'sum']
         }).reset_index()
-        user_time_features.columns = ['phone'] + ['_'.join(col) for col in user_time_features.columns[1:]]
+        user_time_features.columns = ['id'] + ['_'.join(col) for col in user_time_features.columns[1:]]
         return user_time_features
 
     def create_sign_diversity_features(self, df):
-        sign_stats = df.groupby('phone').agg({
+        sign_stats = df.groupby('id').agg({
             'sign': ['nunique', 'count'],
         }).reset_index()
-        sign_stats.columns = ['phone', 'unique_signs', 'total_messages']
+        sign_stats.columns = ['id', 'unique_signs', 'total_messages']
         sign_stats['sign_diversity_ratio'] = sign_stats['unique_signs'] / sign_stats['total_messages']
-        most_common_sign_ratio = df.groupby('phone')['sign'].apply(
+        most_common_sign_ratio = df.groupby('id')['sign'].apply(
             lambda x: x.value_counts().iloc[0] / len(x) if len(x) > 0 and len(x.value_counts()) > 0 else 0
         ).reset_index()
-        most_common_sign_ratio.columns = ['phone', 'dominant_sign_ratio']
-        return sign_stats.merge(most_common_sign_ratio, on='phone')
+        most_common_sign_ratio.columns = ['id', 'dominant_sign_ratio']
+        return sign_stats.merge(most_common_sign_ratio, on='id')
 
     def create_message_content_features(self, df):
         df['message_length'] = df['message'].str.len()
@@ -250,7 +274,7 @@ class DataProcessor:
             df[f'{prefix}_keyword_count'] = df['message'].apply(
                 lambda x: sum(1 for kw in keyword_list if kw in x)
             )
-        content_features = df.groupby('phone').agg({
+        content_features = df.groupby('id').agg({
             'message_length': ['mean', 'std', 'min', 'max'],
             'word_count': ['mean', 'std'],
             'digit_count': ['mean', 'sum'],
@@ -260,14 +284,14 @@ class DataProcessor:
             'risk_keyword_count': ['sum', 'mean'],
             'promo_keyword_count': ['sum', 'mean']
         }).reset_index()
-        content_features.columns = ['phone'] + ['_'.join(col) for col in content_features.columns[1:]]
+        content_features.columns = ['id'] + ['_'.join(col) for col in content_features.columns[1:]]
         return content_features
 
-    def create_phone_area_features(self, df):
-        df['area_code'] = df['phone'].str[3:7] 
-        df['carrier_code'] = df['phone'].astype(str).str[:3]
+    def create_area_features(self, df):
+        df['area_code'] = df['id'].str[3:7] 
+        df['carrier_code'] = df['id'].astype(str).str[:3]
         carrier_stats = df.groupby('carrier_code').agg({
-            'phone': 'nunique',
+            'id': 'nunique',
             'message': 'count'
         }).reset_index()
         carrier_stats.columns = ['carrier_code', 'carrier_user_count', 'carrier_message_count']
@@ -278,14 +302,14 @@ class DataProcessor:
         df['datetime'] = pd.to_datetime(df['datetime'], format='mixed')
         df['contain_slash'] = df['message'].str.count('/')
         df['contain_url'] = df['message'].str.count('://')
-        user_features = df.groupby('phone').agg({
+        user_features = df.groupby('id').agg({
             'message': ['count'],
             'sign': ['nunique'],
             'datetime': ['min', 'max'],
             'contain_slash': ['sum'],
             'contain_url': ['sum']
         }).reset_index()
-        user_features.columns = ['phone', 'message_count', 'sign_unique_count', 'datetime_min', 'datetime_max', 'slash_count', 'url_count']
+        user_features.columns = ['id', 'message_count', 'sign_unique_count', 'datetime_min', 'datetime_max', 'slash_count', 'url_count']
         user_features['time_span_days'] = (user_features['datetime_max'] - user_features['datetime_min']).dt.total_seconds() / (24 * 3600)
         user_features['time_span_days'] = user_features['time_span_days'].replace(0, 1/24)
         user_features['message_frequency'] = user_features['message_count'] / user_features['time_span_days']
@@ -296,12 +320,14 @@ class DataProcessor:
         return user_features
 
     def create_comprehensive_features(self, df):
-        df['datetime'] = pd.to_datetime(df['datetime'], format='mixed')
+        df['datetime'] = pd.to_datetime(df['datetime'], format='mixed', errors='coerce')
+        df = df.dropna(subset=['datetime'])
+
         time_features = self.create_time_features(df)
         content_features = self.create_message_content_features(df)
         sign_features = self.create_sign_diversity_features(df)
-        df_with_area = self.create_phone_area_features(df)
-        area_features = df_with_area.groupby('phone').agg({
+        df_with_area = self.create_area_features(df)
+        area_features = df_with_area.groupby('id').agg({
             'carrier_user_count': 'first',
             'carrier_message_count': 'first'
         }).reset_index()
@@ -309,23 +335,12 @@ class DataProcessor:
         all_features = time_features
         feature_dfs = [content_features,sign_features,area_features,messages_distribution_features]
         for i, feature_df in enumerate(feature_dfs):
-            all_features = all_features.merge(feature_df, on='phone', how='left')
-        self.logger.info(f"人工统计特征维度: {all_features.shape}")
+            all_features = all_features.merge(feature_df, on='id', how='left')
+        self.logger.info(f"Comprehensive features shape: {all_features.shape}")
         for col in all_features.columns:
             if all_features[col].isnull().sum()>0:
                 all_features[col] = all_features[col].fillna(0)
         return all_features
-
-    # def concat_extra_features(self, df, extra_features_df):
-    #     df['phone'] = df['phone'].astype(str)
-    #     extra_features_df['phone'] = extra_features_df['phone'].astype(str)
-    #     merged_df = df.merge(
-    #         extra_features_df, 
-    #         left_on='phone', 
-    #         right_on='phone', 
-    #         how='inner'
-    #     )
-    #     return merged_df
 
     def get_top_n_signs(self, x, n=3):
         if x.dropna().empty:
@@ -336,326 +351,260 @@ class DataProcessor:
 
     def preprocess_batch(self, 
                          data: pd.DataFrame, 
-                         data_tag: str, 
                          is_training: bool=True, 
+                         data_tag: str = 'demo',
                          chunk_id: int|None=None):
-        
-        today = datetime.datetime.now().strftime('%Y%m%d')
+    
         df_label = None
         if is_training:
-            df_label = data[['phone', 'label']]
+            df_label = data[['id', 'label']]
 
         if self.filter_messages_setting:
             data = self.filter_messages(data=data, filter_messages_setting=self.filter_messages_setting)
 
         # generate static vector
-        df_static_vec = data.copy()
-        df_static_vec['text'] = df_static_vec['message']
-        df_merged_static_vec = df_static_vec.groupby('phone').agg({
-            'text': lambda x: ' '.join(x),
+        data_static_vec = data.copy()
+        data_static_vec['text'] = data_static_vec['message']
+        data_merged_static_vec = data_static_vec.groupby('id').agg({
+            'text': lambda x: ' '.join(x)
         }).reset_index()
-
+    
         if is_training:
             if self.static_vec == 'tf-idf':
                 self.logger.info(f'Using TF-IDF vectorizer')
                 vectorizer = TfidfVectorizer(
-                    tokenizer=self.tokenizer,
-                    max_features=300, min_df=2, max_df=0.95, 
-                    ngram_range=(1, 2), sublinear_tf=True
+                    tokenizer=self.tokenizer, **self.tf_idf_config
                 )
-                static_matrix = vectorizer.fit_transform(df_merged_static_vec['text'])
+                static_matrix = vectorizer.fit_transform(data_merged_static_vec['text'])
                 try:
                     static_matrix = static_matrix.toarray()
                 except Exception:
                     static_matrix = np.array(static_matrix)
 
-                joblib.dump(vectorizer, f'{self.root_path}/model/static_vec/{data_tag}/{self.static_vec}_model.pkl')
-                self.logger.info(f'Static vectorizer saved: {self.root_path}/model/static_vec/{data_tag}/{self.static_vec}_model.pkl')
+                joblib.dump(vectorizer, f'{self.static_vec_model_path}/{self.static_vec}_model.pkl')
+                self.logger.info(f'Static vectorizer saved: {self.static_vec_model_path}/{self.static_vec}_model.pkl')
 
             elif self.static_vec == 'word2vec':
                 self.logger.info(f'Using Word2Vec vectorizer')
-                all_messages = df_static_vec['message'].tolist()
+                all_messages = data_static_vec['message'].tolist()
                 sentences = [jieba.lcut(msg) for msg in all_messages if msg.strip()]
-                vectorizer = Word2Vec(
-                    sentences=sentences, 
-                    vector_size=300, 
-                    window=5, 
-                    min_count=2, 
-                    workers=4,
-                    epochs=10,  
-                    sg=1  
-                )
-                tfidf_vectorizer = TfidfVectorizer(
-                    tokenizer=self.tokenizer,
-                    min_df=2, max_df=0.95
-                )
-                tfidf_vectorizer.fit(df_merged_static_vec['text'])
-                self.logger.info(f'Using TF-IDF for Word2Vec weighted vectors')
+
+                if self.w2v_config:
+                    self.logger.info(f'Using Word2Vec with custom config')
+                    vectorizer = Word2Vec(
+                        sentences=sentences,
+                        vector_size=self.w2v_config.get('vector_size', 300),
+                        window=self.w2v_config.get('window', 5),
+                        min_count=self.w2v_config.get('min_count', 2),
+                        workers=self.w2v_config.get('workers', 4),
+                        epochs=self.w2v_config.get('epochs', 10),
+                        sg=self.w2v_config.get('sg', 1)
+                    )
+                else:
+                    self.logger.info(f'Using Word2Vec with default config')
+                    vectorizer = Word2Vec(
+                        sentences=sentences,
+                        vector_size=300,
+                        window=5,
+                        min_count=2,
+                        workers=4,
+                        epochs=10,
+                        sg=1
+                    )
                 user_vectors = []
-                for phone in df_merged_static_vec['phone']:
-                    user_text = df_merged_static_vec[df_merged_static_vec['phone'] == phone]['text'].iloc[0]
+                for id in tqdm(data_merged_static_vec['id'], desc="Fitting Word2Vec user vector"):
+                    user_text = data_merged_static_vec[data_merged_static_vec['id'] == id]['text'].iloc[0]
                     user_words = jieba.lcut(user_text)
-                    tfidf_scores = tfidf_vectorizer.transform([user_text]).toarray()[0]
-                    feature_names = tfidf_vectorizer.get_feature_names_out()
-                    word_to_tfidf = dict(zip(feature_names, tfidf_scores))
-                    weighted_vectors = []
-                    weights = []
-                    for word in user_words:
-                        if word in vectorizer.wv and word in word_to_tfidf:
-                            weighted_vectors.append(vectorizer.wv[word])
-                            weights.append(word_to_tfidf[word])
-                    if weighted_vectors:
-                        user_vector = np.average(weighted_vectors, weights=weights, axis=0)
-                    else:
-                        user_vector = np.zeros(300)
-                    user_vectors.append(user_vector)
-                static_matrix = np.array(user_vectors)
-                vectorizer.save(f'{self.root_path}/model/static_vec/{self.static_vec}_model.bin')
-                joblib.dump(tfidf_vectorizer, f'{self.root_path}/model/static_vec/{self.static_vec}_weighted_tfidf_model.pkl')
-                self.logger.info(f'Word2Vec and TF-IDF models saved')
-        else:
-            if self.static_vec == 'tf-idf':
-                vectorizer = joblib.load(f'{self.root_path}/model/static_vec/{self.static_vec}_model.pkl')
-                self.logger.info(f'Static vectorizer loaded: {self.root_path}/model/static_vec/{self.static_vec}_model.pkl')
-                static_matrix = vectorizer.transform(df_merged_static_vec['text'])
-                if hasattr(static_matrix, 'toarray'):
-                    static_matrix = static_matrix.toarray()
-            elif self.static_vec == 'word2vec':
-                vectorizer = Word2Vec.load(f'{self.root_path}/model/static_vec/{self.static_vec}_model.bin')
-                tfidf_vectorizer = joblib.load(f'{self.root_path}/model/static_vec/{self.static_vec}_weighted_tfidf_model.pkl')
-                self.logger.info(f'Word2Vec and TF-IDF models loaded')
-                user_vectors = []
-                for phone in df_merged_static_vec['phone']:
-                    user_text = df_merged_static_vec[df_merged_static_vec['phone'] == phone]['text'].iloc[0]
-                    # 分词方式根据配置选择
-                    user_words = self.tokenizer(user_text)
-                    tfidf_scores = tfidf_vectorizer.transform([user_text]).toarray()[0]
-                    feature_names = tfidf_vectorizer.get_feature_names_out()
-                    word_to_tfidf = dict(zip(feature_names, tfidf_scores))
-                    weighted_vectors = []
-                    weights = []
-                    for word in user_words:
-                        if word in vectorizer.wv and word in word_to_tfidf:
-                            weighted_vectors.append(vectorizer.wv[word])
-                            weights.append(word_to_tfidf[word])
-                    if weighted_vectors:
-                        user_vector = np.average(weighted_vectors, weights=weights, axis=0)
+                    word_vectors = [vectorizer.wv[word] for word in user_words if word in vectorizer.wv]
+                    if word_vectors:
+                        user_vector = np.mean(word_vectors, axis=0)
                     else:
                         user_vector = np.zeros(300)
                     user_vectors.append(user_vector)
                 static_matrix = np.array(user_vectors)
 
-        # 确保 static_matrix 为 numpy 数组
+                vectorizer.save(f'{self.static_vec_model_path}/{self.static_vec}_model.bin')
+                self.logger.info(f'Word2Vec model saved: {self.static_vec_model_path}/{self.static_vec}_model.bin')
+
+        else:
+            if self.static_vec == 'tf-idf':
+                model_file = f'{self.static_vec_model_path}/{self.static_vec}_model.pkl'
+                if not os.path.exists(model_file):
+                    raise FileNotFoundError(f"TF-IDF model file not found: {model_file}")
+                vectorizer = joblib.load(model_file)
+                self.logger.info(f'Static vectorizer loaded: {model_file}')
+                static_matrix = vectorizer.transform(data_merged_static_vec['text'])
+                if hasattr(static_matrix, 'toarray'):
+                    static_matrix = static_matrix.toarray()
+            elif self.static_vec == 'word2vec':
+                model_file = f'{self.static_vec_model_path}/{self.static_vec}_model.bin'
+                if not os.path.exists(model_file):
+                    raise FileNotFoundError(f"Word2Vec model file not found: {model_file}")
+                vectorizer = Word2Vec.load(model_file)
+                self.logger.info(f'Word2Vec model loaded: {model_file}')
+                user_vectors = []
+                for id in tqdm(data_merged_static_vec['id'], desc="Fitting Word2Vec user vector"):
+                    user_text = data_merged_static_vec[data_merged_static_vec['id'] == id]['text'].iloc[0]
+                    user_words = self.tokenizer(user_text)
+                    word_vectors = [vectorizer.wv[word] for word in user_words if word in vectorizer.wv]
+                    if word_vectors:
+                        user_vector = np.mean(word_vectors, axis=0)
+                    else:
+                        user_vector = np.zeros(300)
+                    user_vectors.append(user_vector)
+                static_matrix = np.array(user_vectors)
+
         if not isinstance(static_matrix, np.ndarray):
             try:
                 static_matrix = static_matrix.toarray()
             except Exception:
                 static_matrix = np.array(static_matrix)
+
         df_static_vec = pd.DataFrame(static_matrix, columns=[f'static_vec_{i}' for i in range(static_matrix.shape[1])])
-        df_static_vec['phone'] = df_merged_static_vec['phone']
-        del df_merged_static_vec, static_matrix
+        df_static_vec['id'] = data_merged_static_vec['id']
+        del data_merged_static_vec, static_matrix
         gc.collect()
 
-        # 动态特征处理
-        df_dynamic_vec = data.copy()
+        data_dynamic_vec = data.copy()
         if self.dynamic_vec is not None:
-            if self.dynamic_vec == 'bert':
-                tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
-                embedding_model = BertModel.from_pretrained('bert-base-chinese')
-            elif self.dynamic_vec == 'roberta':
-                tokenizer = BertTokenizer.from_pretrained('hfl/chinese-roberta-wwm-ext')
-                embedding_model = BertModel.from_pretrained('hfl/chinese-roberta-wwm-ext')
-            else:
-                tokenizer = None
-                embedding_model = None
+            tokenizer = None
+            embedding_model = None
+            if self.language == 'cn':
+                if self.dynamic_vec == 'bert':
+                    tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
+                    embedding_model = BertModel.from_pretrained('bert-base-chinese')
+                elif self.dynamic_vec == 'roberta':
+                    tokenizer = BertTokenizer.from_pretrained('hfl/chinese-roberta-wwm-ext') # '/home/zhoufeng/.cache/modelscope/hub/models/dienstag/chinese-roberta-wwm-ext'
+                    embedding_model = BertModel.from_pretrained('hfl/chinese-roberta-wwm-ext') # '/home/zhoufeng/.cache/modelscope/hub/models/dienstag/chinese-roberta-wwm-ext'
+            elif self.language == 'en':
+                if self.dynamic_vec == 'bert':
+                    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+                    embedding_model = BertModel.from_pretrained('bert-base-uncased')
+                elif self.dynamic_vec == 'roberta':
+                    tokenizer = BertTokenizer.from_pretrained('roberta-base')
+                    embedding_model = BertModel.from_pretrained('roberta-base')
+
             if tokenizer is not None and embedding_model is not None:
                 embedding_model.eval()
                 embedding_model.to(self.device)
-                messages = df_dynamic_vec['message'].tolist()
+                messages = data_dynamic_vec['message'].tolist()
                 dynamic_embeddings = self.encode_texts_batch(
                     messages,
                     tokenizer=tokenizer,
-                    model=embedding_model,
-                    is_training=is_training
+                    model=embedding_model
                 )
                 dynamic_embeddings_array = np.array(dynamic_embeddings)
                 dynamic_embedding_dim = dynamic_embeddings_array.shape[1]
-                self.logger.info(f'Embedding dim: {dynamic_embedding_dim}')
+                self.logger.info(f'Dynamic Embedding dim: {dynamic_embedding_dim}')
                 df_embedding = pd.DataFrame(dynamic_embeddings_array, columns=[f'embedding_{i}' for i in range(dynamic_embedding_dim)])
-                df_dynamic_vec = pd.concat([df_dynamic_vec.reset_index(drop=True), df_embedding], axis=1)
-                embedding_columns = [col for col in df_dynamic_vec.columns if col.startswith('embedding_')]
-                df_for_pooling = df_dynamic_vec[['phone'] + embedding_columns].copy()
-                df_dynamic_vec = self.embedding_pooling(df_for_pooling)
-                del messages, dynamic_embeddings, dynamic_embeddings_array, df_embedding, df_for_pooling
-                del embedding_model, tokenizer
+                data_dynamic_vec = pd.concat([data_dynamic_vec.reset_index(drop=True), df_embedding], axis=1)
+                embedding_columns = [col for col in data_dynamic_vec.columns if col.startswith('embedding_')]
+                data_for_pooling = data_dynamic_vec[['id'] + embedding_columns].copy()
+                data_dynamic_vec = self.embedding_pooling(data_for_pooling)
+
+                del messages, dynamic_embeddings, dynamic_embeddings_array, df_embedding, data_for_pooling, embedding_model, tokenizer
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
                 gc.collect()
         else:
-            # 如果未指定动态特征，直接用 phone 列
-            df_dynamic_vec = df_dynamic_vec[['phone']].copy()
+            raise ValueError("Dynamic vectorization method not specified.")
 
-        # 其它特征
-        df_features_extra = self.create_comprehensive_features(df)
-        df_features = self.concat_embedding_tfidf(df_dynamic_vec, df_static_vec)
-        df_features = self.concat_extra_features(df_features, df_features_extra)
-        del df_static_vec, df_dynamic_vec, df_features_extra, df
+        # create extra features
+        df_features_extra = self.create_comprehensive_features(data)
+
+        for data in [data_static_vec, data_dynamic_vec, df_features_extra]:
+            data['id'] = data['id'].astype(str)
+
+        df_features = pd.merge(data_dynamic_vec, df_static_vec, on='id', how='inner')
+        df_features = pd.merge(df_features, df_features_extra, on='id', how='left')
+
+        del df_static_vec, data_dynamic_vec, df_features_extra, data
         gc.collect()
+
+        # merge labels
         if is_training and df_label is not None:
             df_features = df_features.merge(
                 df_label,
-                on='phone',
+                on='id',
                 how='left'
             )
-            self.logger.info(f'Training data merged with label, final shape: {df_features.shape}')
+            
         if chunk_id is not None:
-            output_path = f'{self.root_path}/data/{data_tag}_preproceed_{today}_chunk_{chunk_id}.csv'
+            output_path = f'{self.root_path}/data/preproceed/{data_tag}_chunk_{chunk_id}.csv'
         else:
-            output_path = f'{self.root_path}/data/{data_tag}_preproceed_{today}.csv'
+            output_path = f'{self.root_path}/data/preproceed/{data_tag}.csv'
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         df_features.to_csv(output_path, index=False)
-        self.logger.info(f'Feature data saved: {output_path}')
+        self.logger.info(f'Feature data saved: {output_path}, shape: {df_features.shape}')
         return output_path
 
 
     def preprocess(self, 
                    data_path: str, 
-                   data_tag: str, 
                    enc_col: str|None = None,
+                   data_tag: str = 'demo',
                    chunk_size: int = 200000):  
         
-        is_training = False
-        file_name = data_path.split('/')[-1].split('.')[0]
-        self.logger.info(f'Starting preprocessing for {file_name}')
+        output_file_path = f'{self.root_path}/data/preproceed/{data_tag}.csv'
+        if os.path.exists(output_file_path):
+            self.logger.info(f'Output file already exists: {output_file_path}, skip preprocessing.')
+            return output_file_path
 
+        is_training = False
         data = pd.read_csv(data_path, encoding='utf-8', on_bad_lines='skip')
 
         if self.use_aes and enc_col:
-            self.logger.info(f'Using AES encryption for column: {enc_col}, transforming to column: "id" ')
+            self.logger.info(f'Using AES encryption for column: "{enc_col}", transforming to column: "id" ')
             data = self.decrypt_data(data=data, enc_col=enc_col)
 
         if 'label' in data.columns:
             is_training = True
-            df_label = data[['phone', 'label']]
             self.logger.info(f"Detected 'label' column, setting is_training=True")
+        else:
+            self.logger.info(f"No 'label' column detected, setting is_training=False")
 
         total_rows = len(data)
-        if total_rows > chunk_size:
-            self.logger.info(f'Total rows: {total_rows}, preprocessing in chunks of {chunk_size} rows')
-            chunk_files = []
-            num_chunks = (total_rows + chunk_size - 1) // chunk_size
-
-            for i in range(num_chunks):
-                start_idx = i * chunk_size
-                end_idx = min((i + 1) * chunk_size, total_rows)
-                self.logger.info(f"Processing chunk {i+1}/{num_chunks}, row range: {start_idx}-{end_idx}")
-                data_chunk = data.iloc[start_idx:end_idx].copy()
-
-                chunk_file = self.preprocess_batch(
-                    data=data_chunk,
-                    data_tag=data_tag,
-                    is_training=is_training,
-                    chunk_id=i
-                )
-                
-                chunk_files.append(chunk_file)
-                
-                # 清理内存
-                del df_chunk
-                gc.collect()
-                
-                self.logger.info(f"第 {i+1} 块处理完成")
-            
-            # 合并所有块的结果
-            self.logger.info("开始合并所有块的结果...")
-            combined_df = None
-            
-            for i, chunk_file in enumerate(chunk_files):
-                chunk_df = pd.read_csv(chunk_file)
-                
-                if combined_df is None:
-                    combined_df = chunk_df
-                else:
-                    combined_df = pd.concat([combined_df, chunk_df], ignore_index=True)
-                
-                # 删除临时文件
-                os.remove(chunk_file)
-                self.logger.info(f"已合并第 {i+1} 块，删除临时文件: {chunk_file}")
-                
-                del chunk_df
-                gc.collect()
-
-
-
         if is_training:
-            # training data contain labels
-
-            df_label = data[['phone', 'label']]
-            df_label.drop_duplicates(subset=['phone'], inplace=True)
-            
+            self.logger.info(f'Training mode: processing all data at once, total rows: {total_rows}')
             self.preprocess_batch(
                 data=data,
-                data_tag=data_tag,
-                is_training=is_training,
+                is_training=is_training
             )
         else:
-            # 预测模式：分块处理
-            df = pd.read_csv(data_path, encoding='utf-8', names=['phone_id', 'message','sign','datetime'],on_bad_lines='skip')
-            df = self.decrypt_df(df)
-            
-            total_rows = len(df)
-            self.logger.info(f"总数据量: {total_rows}, 将分成 {chunk_size} 行一个块进行处理")
-            
-            chunk_files = []
-            num_chunks = (total_rows + chunk_size - 1) // chunk_size
-            
-            for i in range(num_chunks):
-                start_idx = i * chunk_size
-                end_idx = min((i + 1) * chunk_size, total_rows)
-                self.logger.info(f"处理第 {i+1}/{num_chunks} 块数据，行数范围: {start_idx}-{end_idx}")
-
-                df_chunk = df.iloc[start_idx:end_idx].copy()
+            if total_rows > chunk_size:
+                self.logger.info(f'Total rows: {total_rows}, preprocessing in chunks of {chunk_size} rows')
+                chunk_files_path = []
+                num_chunks = (total_rows + chunk_size - 1) // chunk_size
+                for i in range(num_chunks):
+                    start_idx = i * chunk_size
+                    end_idx = min((i + 1) * chunk_size, total_rows)
+                    self.logger.info(f"Processing chunk {i+1}/{num_chunks}, row range: {start_idx}-{end_idx}")
+                    data_chunk = data.iloc[start_idx:end_idx].copy()
+                    chunk_file_path = self.preprocess_batch(
+                        data=data_chunk,
+                        is_training=is_training,
+                        chunk_id=i)
+                    chunk_files_path.append(chunk_file_path)
+                    del data_chunk
+                    gc.collect()
+                    self.logger.info(f"Chunk {i+1} processing completed")
+                self.logger.info("Starting to write all chunk results to final file (append mode)")
                 
-                # 处理该块数据
-                chunk_file = self.preprocess_batch(
-                    data=df_chunk,
-                    data_tag=data_tag,
+                first = True
+                for i, chunk_file_path in enumerate(chunk_files_path):
+                    chunk_data = pd.read_csv(chunk_file_path)
+                    chunk_data.to_csv(output_file_path, mode='w' if first else 'a', header=first, index=False)
+                    self.logger.info(f'Chunk {i+1} appended to {output_file_path}')
+                    first = False
+                    del chunk_data
+                    gc.collect()
+                self.logger.info(f'All chunks written to {output_file_path}')
+            else:
+                self.preprocess_batch(
+                    data=data,
                     is_training=is_training,
-                    chunk_id=i
+                    data_tag=data_tag
                 )
-                
-                chunk_files.append(chunk_file)
-                
-                # 清理内存
-                del df_chunk
-                gc.collect()
-                
-                self.logger.info(f"第 {i+1} 块处理完成")
+
             
-            # 合并所有块的结果
-            self.logger.info("开始合并所有块的结果...")
-            combined_df = None
-            
-            for i, chunk_file in enumerate(chunk_files):
-                chunk_df = pd.read_csv(chunk_file)
-                
-                if combined_df is None:
-                    combined_df = chunk_df
-                else:
-                    combined_df = pd.concat([combined_df, chunk_df], ignore_index=True)
-                
-                # 删除临时文件
-                os.remove(chunk_file)
-                self.logger.info(f"已合并第 {i+1} 块，删除临时文件: {chunk_file}")
-                
-                del chunk_df
-                gc.collect()
-            
-            # 保存最终合并的结果
-            today = datetime.datetime.now().strftime('%Y%m%d')
-            final_output_path = f'{self.root_path}/data/{data_tag}_preproceed_{today}.csv'
-            combined_df.to_csv(final_output_path, index=False)
-            self.logger.info(f'最终合并数据保存完毕: {final_output_path}')
-            self.logger.info(f'最终数据维度: {combined_df.shape}')
-            
-            del combined_df
-            gc.collect()
 

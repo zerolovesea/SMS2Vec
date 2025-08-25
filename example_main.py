@@ -1,5 +1,7 @@
 # example_main.py
 
+import yaml
+from src.config_manager import ConfigManager
 from src.data_processor import DataProcessor
 from src.trainer import Trainer
 from src.predictor import Predictor
@@ -9,35 +11,47 @@ import joblib
 
 
 if __name__ == "__main__":
+    processing_config = ConfigManager("example_processing_config.yaml")
+
     # source data path
-    data_path = "data/raw/train_data.csv"
+    train_data_path = "data/raw/train_data.csv" 
+    pred_data_path = "data/raw/predict_data.csv"
 
-    # AES encryption settings
-    use_aes = True
-    aes_key = b'20250703qwerzxcv'
-    aes_iv = b'20250703qwerzxcv'
+    use_aes = processing_config.get('use_aes', False)
+    aes_key = processing_config.get('aes_key', None)
 
-    # Message filter settings:
-    # keywords_to_remove: Messages containing any of these keywords will be removed.
-    # keep_keywords: Messages containing any of these keywords have the highest priority and will never be deleted under any circumstances.
-    filter_messages_setting = {
-        "keywords_to_remove": ['快递', '外卖', '美食', '包裹', '物流'],
-        "keep_keywords": ['贷', '借', '金融', '信用', '好分期', '花呗', '呗', '钱']
-    }
+    if aes_key is not None and isinstance(aes_key, str):
+        aes_key = aes_key.encode('utf-8')
+    aes_iv = processing_config.get('aes_iv', None)
+    if aes_iv is not None and isinstance(aes_iv, str):
+        aes_iv = aes_iv.encode('utf-8')
+
+    filter_messages_setting = processing_config.get('filter_messages_setting', {})
+    static_vec = processing_config.get('static_vec', None)
+    dynamic_vec = processing_config.get('dynamic_vec', None)
+    tf_idf_config = processing_config.get('tf_idf_config', {})
+    w2v_config = processing_config.get('w2v_config', {})
 
     processor = DataProcessor(
         use_aes=use_aes,
         aes_key=aes_key,
         aes_iv=aes_iv,
-        set_cn_stopwords=True,
         filter_messages_setting=filter_messages_setting,
         static_vec="word2vec",
+        w2v_config=w2v_config,
+        tf_idf_config=tf_idf_config,
         dynamic_vec='roberta',
-        language='cn'
+        language='cn',
     )
 
-    processed_path = processor.preprocess(data_path=data_path, 
-                                        data_tag="demo", 
+    train_data_processed_path = processor.preprocess(data_path=train_data_path, 
+                                        enc_col='enc_id', 
+                                        data_tag='demo', 
+                                        chunk_size=200000)
+    
+    pred_data_processed_path = processor.preprocess(data_path=pred_data_path, 
+                                        enc_col='enc_id', 
+                                        data_tag='demo', 
                                         chunk_size=200000)
 
     # # 训练
