@@ -27,15 +27,12 @@ from modelscope import snapshot_download
 from FlagEmbedding import BGEM3FlagModel
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
-from transformers import BertTokenizer, BertModel, AutoTokenizer, AutoModel
-
+from transformers import BertTokenizer, BertModel
 from src.tool import decrypt_data
 from src.logger_manager import LoggerManager
-from sklearn.decomposition import TruncatedSVD
 
 
 class DataProcessor:
-
     def __init__(self, 
                  use_aes: bool = False,
                  aes_key: bytes | None = None,

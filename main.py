@@ -59,18 +59,5 @@ if __name__ == "__main__":
     #                                     data_tag='demo_qwen3_w2v_pred', 
     #                                     chunk_size=200000)
 
-    # # 训练
     # processed_df = pd.read_csv(processed_path)
-    # from sklearn.ensemble import RandomForestClassifier
-    # X = processed_df.drop(['phone', 'label'], axis=1)
-    # y = processed_df['label']
-    # trainer = Trainer(model=RandomForestClassifier(), X=X, y=y)
-    # model = trainer.train()
-    # trainer.save("model/demo_rf.joblib")
 
-    # # 推理
-    # predictor = Predictor("model/demo_rf.joblib")
-    # preds = predictor.predict(X)
-    # print("预测结果示例：", preds[:10])
-
-# modelscope download --model Qwen/Qwen3-Embedding-8B --local_dir ./Qwen3-Embedding-8B

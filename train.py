@@ -4,14 +4,14 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from torch.utils.data import DataLoader, TensorDataset
-from model.dl_modules.layers.mlp import MLP
+from model.dl_modules.mlp import MLP
 from src.evaluation import evaluate
 
 
 if __name__ == "__main__": 
-    data_path = "data/preproceed/demo_train_qwen3_w2v_mean.csv"
+    data_path = "data/preproceed/demo_train_bge_m3_w2v_mean.csv"
     df = pd.read_csv(data_path)
-    model_tag = 'MLP_Qwen3_W2V_mean'
+    model_tag = 'MLP_BGE_M3_W2V_mean'
 
 
     label_col = 'label'  
