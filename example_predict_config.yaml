@@ -15,7 +15,7 @@ filter_messages_setting:
 
 # vectorization|embedding config
 static_vec: word2vec
-dynamic_vec: roberta # hfl/chinese-roberta-wwm-ext
+dynamic_vec: roberta # roberta # beg-m3 # qwen3
 w2v_config: {
         "vector_size": 300,
         "window": 5,

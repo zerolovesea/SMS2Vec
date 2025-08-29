@@ -1,5 +1,3 @@
-
-
 """
 data_processor.py
 
@@ -14,21 +12,30 @@ import torch
 import joblib
 import jieba
 import string
-import base64
+
 import datetime
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+
+from torch import Tensor
+import torch.nn.functional as F
+
+from gensim.models import Word2Vec
+from nltk.tokenize import word_tokenize
+from modelscope import snapshot_download
+from FlagEmbedding import BGEM3FlagModel
+from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from transformers import BertTokenizer, BertModel, AutoTokenizer, AutoModel
+
+from src.tool import decrypt_data
 from src.logger_manager import LoggerManager
 from sklearn.decomposition import TruncatedSVD
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
-from transformers import BertTokenizer, BertModel
-from sklearn.feature_extraction.text import TfidfVectorizer
-from gensim.models import Word2Vec
 
 
 class DataProcessor:
+
     def __init__(self, 
                  use_aes: bool = False,
                  aes_key: bytes | None = None,
@@ -39,9 +46,9 @@ class DataProcessor:
                  dynamic_vec: str | None = None,
                  w2v_config: dict = {},
                  tf_idf_config: dict = {},
+                 dynamic_vec_pooling_method: str = 'mean',
                  language: str = 'cn'):
 
-        today = datetime.datetime.now().strftime('%Y%m%d')
         self.logger = LoggerManager.get_logger()
 
         self.root_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
@@ -71,28 +78,8 @@ class DataProcessor:
 
         self.static_vec_model_path = f'{self.root_path}/model/static_vec'
         os.makedirs(self.static_vec_model_path, exist_ok=True)
-
+        self.dynamic_vec_pooling_method = dynamic_vec_pooling_method
         self.language = language
-
-    def aes_encrypt(self, text: str) -> str:
-        if not isinstance(enc_text, str) or pd.isna(enc_text):
-            raise ValueError("Input to aes_encrypt must be a non-empty string")
-        cipher = AES.new(self.aes_key, AES.MODE_CBC, self.aes_iv)
-        padded_text = pad(text.encode('utf-8'), AES.block_size)
-        encrypted = cipher.encrypt(padded_text)
-        return base64.b64encode(encrypted).decode('utf-8')
-
-    def aes_decrypt(self, enc_text: str) -> str:
-        cipher = AES.new(self.aes_key, AES.MODE_CBC, self.aes_iv)
-        decrypted = cipher.decrypt(base64.b64decode(enc_text))
-        unpadded = unpad(decrypted, AES.block_size)
-        return unpadded.decode('utf-8')
-
-    def decrypt_data(self, data: pd.DataFrame, enc_col: str = 'phone_id') -> pd.DataFrame:
-        assert enc_col in data.columns, f"Encrypted column '{enc_col}' does not exist in DataFrame"
-        data['id'] = data[enc_col].apply(self.aes_decrypt)
-        data.drop(columns=[enc_col], inplace=True)
-        return data
 
     def filter_messages(self, 
                         data: pd.DataFrame, 
@@ -178,7 +165,6 @@ class DataProcessor:
         if self.language == 'cn':
             words = jieba.lcut(text)
         else:
-            from nltk.tokenize import word_tokenize
             words = word_tokenize(text)
 
         return [w for w in words if w.strip() and w not in self.stopwords and not self.is_punctuation(w)]
@@ -190,17 +176,53 @@ class DataProcessor:
             return True
         return all(char in chinese_punctuation + english_punctuation for char in word)
 
-    def encode_texts_batch(self, texts, tokenizer, model, batch_size=32):
-        all_embeddings = []
-        for i in tqdm(range(0, len(texts), batch_size), desc=f"Dynamic Model Encoding: {self.dynamic_vec}", leave=True, dynamic_ncols=True):
-            batch_texts = texts[i:i+batch_size]
-            inputs = tokenizer(batch_texts, return_tensors="pt", truncation=True, padding=True, max_length=128)
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            with torch.no_grad():
-                outputs = model(**inputs)
-            cls_embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-            all_embeddings.extend(cls_embeddings)
-        return all_embeddings
+
+    def create_dynamic_vec(self, dynamic_vec, texts, device, batch_size=32, max_length=128, language='cn'):
+        if dynamic_vec == 'bge-m3':
+            model_dir = snapshot_download('BAAI/bge-m3', cache_dir='./model/dynamic_vec')
+            model = BGEM3FlagModel(model_dir, use_fp16=True)
+            return model.encode(texts, batch_size=batch_size)['dense_vecs']
+
+        elif dynamic_vec == 'qwen3':
+            model_dir = snapshot_download('Qwen/Qwen3-Embedding-0.6B', cache_dir='./model/dynamic_vec')
+            model = SentenceTransformer(model_dir)
+            
+            all_embeddings = []
+            for i in tqdm(range(0, len(texts), batch_size), desc="Qwen3 Embedding", leave=True, dynamic_ncols=True):
+                batch_embeddings = model.encode(texts[i:i+batch_size])
+                all_embeddings.extend(batch_embeddings)
+                del batch_embeddings
+                gc.collect()
+                torch.mps.empty_cache()
+            return all_embeddings
+
+        elif dynamic_vec in ['bert', 'roberta']:
+            if language == 'en':
+                model_name = 'bert-base-uncased' if dynamic_vec == 'bert' else 'roberta-base'
+            else:
+                model_name = 'google-bert/bert-base-chinese' if dynamic_vec == 'bert' else 'hfl/chinese-roberta-wwm-ext'
+            tokenizer = BertTokenizer.from_pretrained(model_name, cache_dir='./model/dynamic_vec')
+            model = BertModel.from_pretrained(model_name, cache_dir='./model/dynamic_vec')
+
+            # embedding_model_path = '/home/zhoufeng/.cache/modelscope/hub/models/dienstag/chinese-roberta-wwm-ext'
+            # tokenizer = BertTokenizer.from_pretrained(embedding_model_path)
+            # model = BertModel.from_pretrained(embedding_model_path)
+
+            model.eval()
+            model.to(device)
+            all_embeddings = []
+            for i in tqdm(range(0, len(texts), batch_size), desc=f"{dynamic_vec} Embedding", leave=True, dynamic_ncols=True):
+                batch_texts = texts[i:i+batch_size]
+                inputs = tokenizer(batch_texts, return_tensors="pt", truncation=True, padding=True, max_length=max_length)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                batch_embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+                all_embeddings.extend(batch_embeddings)
+            return all_embeddings
+
+        else:
+            raise ValueError(f"Unsupported dynamic_vec type: {dynamic_vec}")
 
     def embedding_pooling(self, data: pd.DataFrame, pooling: str = 'mean') -> pd.DataFrame:
         """
@@ -225,13 +247,22 @@ class DataProcessor:
             result = data.groupby('id')[embedding_columns].min().reset_index()
         elif pooling == 'sum':
             result = data.groupby('id')[embedding_columns].sum().reset_index()
+        elif pooling == 'attention':
+            from model.dl_modules.attention_pooling import AttentionPooling
+            embedding_dim = len(embedding_columns)
+            attn_pool = AttentionPooling(embedding_dim).to(self.device)
+            pooled_list = []
+            for uid, group in data.groupby('id'):
+                emb = torch.tensor(group[embedding_columns].values, dtype=torch.float32, device=self.device)
+                pooled = attn_pool(emb).detach().cpu().numpy()
+                pooled_list.append({'id': uid, **{f'embedding_{i}': pooled[i] for i in range(embedding_dim)}})
+            result = pd.DataFrame(pooled_list)
         else:
             self.logger.warning(f"Unknown pooling method '{pooling}', defaulting to mean.")
             result = data.groupby('id')[embedding_columns].mean().reset_index()
         self.logger.info(f'Embedding pooling ({pooling}) completed, unique user count: {len(result)}, feature dimension: {len(embedding_columns)}')
         return result  
     
-
     def create_time_features(self, df):
         df['datetime'] = pd.to_datetime(df['datetime'], format='mixed')
         df['hour'] = df['datetime'].dt.hour
@@ -342,19 +373,11 @@ class DataProcessor:
                 all_features[col] = all_features[col].fillna(0)
         return all_features
 
-    def get_top_n_signs(self, x, n=3):
-        if x.dropna().empty:
-            return 'unknown'
-        sign_counts = x.value_counts()
-        top_signs = sign_counts.head(n).index.tolist()
-        return '|'.join(top_signs)
-
     def preprocess_batch(self, 
                          data: pd.DataFrame, 
                          is_training: bool=True, 
                          data_tag: str = 'demo',
                          chunk_id: int|None=None):
-    
         df_label = None
         if is_training:
             df_label = data[['id', 'label']]
@@ -362,7 +385,7 @@ class DataProcessor:
         if self.filter_messages_setting:
             data = self.filter_messages(data=data, filter_messages_setting=self.filter_messages_setting)
 
-        # generate static vector
+        # create static vector representations
         data_static_vec = data.copy()
         data_static_vec['text'] = data_static_vec['message']
         data_merged_static_vec = data_static_vec.groupby('id').agg({
@@ -460,53 +483,29 @@ class DataProcessor:
             except Exception:
                 static_matrix = np.array(static_matrix)
 
-        df_static_vec = pd.DataFrame(static_matrix, columns=[f'static_vec_{i}' for i in range(static_matrix.shape[1])])
-        df_static_vec['id'] = data_merged_static_vec['id']
+        data_static_vec = pd.DataFrame(static_matrix, columns=[f'static_vec_{i}' for i in range(static_matrix.shape[1])])
+        data_static_vec['id'] = data_merged_static_vec['id']
         del data_merged_static_vec, static_matrix
         gc.collect()
 
+        # Create dynamic vector representations
         data_dynamic_vec = data.copy()
-        if self.dynamic_vec is not None:
-            tokenizer = None
-            embedding_model = None
-            if self.language == 'cn':
-                if self.dynamic_vec == 'bert':
-                    tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
-                    embedding_model = BertModel.from_pretrained('bert-base-chinese')
-                elif self.dynamic_vec == 'roberta':
-                    tokenizer = BertTokenizer.from_pretrained('hfl/chinese-roberta-wwm-ext') # '/home/zhoufeng/.cache/modelscope/hub/models/dienstag/chinese-roberta-wwm-ext'
-                    embedding_model = BertModel.from_pretrained('hfl/chinese-roberta-wwm-ext') # '/home/zhoufeng/.cache/modelscope/hub/models/dienstag/chinese-roberta-wwm-ext'
-            elif self.language == 'en':
-                if self.dynamic_vec == 'bert':
-                    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-                    embedding_model = BertModel.from_pretrained('bert-base-uncased')
-                elif self.dynamic_vec == 'roberta':
-                    tokenizer = BertTokenizer.from_pretrained('roberta-base')
-                    embedding_model = BertModel.from_pretrained('roberta-base')
+        dynamic_embeddings = self.create_dynamic_vec(
+            dynamic_vec=self.dynamic_vec,
+            device=self.device,
+            texts=data_dynamic_vec['message'].tolist(),
+        )
+        dynamic_embeddings_array = np.array(dynamic_embeddings)
+        dynamic_embedding_dim = dynamic_embeddings_array.shape[1]
+        self.logger.info(f'Dynamic Embedding dim: {dynamic_embedding_dim}')
+        df_embedding = pd.DataFrame(dynamic_embeddings_array, columns=[f'embedding_{i}' for i in range(dynamic_embedding_dim)])
+        data_dynamic_vec = pd.concat([data_dynamic_vec.reset_index(drop=True), df_embedding], axis=1)
+        embedding_columns = [col for col in data_dynamic_vec.columns if col.startswith('embedding_')]
+        data_for_pooling = data_dynamic_vec[['id'] + embedding_columns].copy()
+        data_dynamic_vec = self.embedding_pooling(data_for_pooling, pooling=self.dynamic_vec_pooling_method)
 
-            if tokenizer is not None and embedding_model is not None:
-                embedding_model.eval()
-                embedding_model.to(self.device)
-                messages = data_dynamic_vec['message'].tolist()
-                dynamic_embeddings = self.encode_texts_batch(
-                    messages,
-                    tokenizer=tokenizer,
-                    model=embedding_model
-                )
-                dynamic_embeddings_array = np.array(dynamic_embeddings)
-                dynamic_embedding_dim = dynamic_embeddings_array.shape[1]
-                self.logger.info(f'Dynamic Embedding dim: {dynamic_embedding_dim}')
-                df_embedding = pd.DataFrame(dynamic_embeddings_array, columns=[f'embedding_{i}' for i in range(dynamic_embedding_dim)])
-                data_dynamic_vec = pd.concat([data_dynamic_vec.reset_index(drop=True), df_embedding], axis=1)
-                embedding_columns = [col for col in data_dynamic_vec.columns if col.startswith('embedding_')]
-                data_for_pooling = data_dynamic_vec[['id'] + embedding_columns].copy()
-                data_dynamic_vec = self.embedding_pooling(data_for_pooling)
-
-                del messages, dynamic_embeddings, dynamic_embeddings_array, df_embedding, data_for_pooling, embedding_model, tokenizer
-                torch.cuda.empty_cache() if torch.cuda.is_available() else None
-                gc.collect()
-        else:
-            raise ValueError("Dynamic vectorization method not specified.")
+        del dynamic_embeddings, dynamic_embeddings_array, df_embedding, data_for_pooling
+        gc.collect()
 
         # create extra features
         df_features_extra = self.create_comprehensive_features(data)
@@ -514,10 +513,10 @@ class DataProcessor:
         for data in [data_static_vec, data_dynamic_vec, df_features_extra]:
             data['id'] = data['id'].astype(str)
 
-        df_features = pd.merge(data_dynamic_vec, df_static_vec, on='id', how='inner')
+        df_features = pd.merge(data_dynamic_vec, data_static_vec, on='id', how='inner')
         df_features = pd.merge(df_features, df_features_extra, on='id', how='left')
 
-        del df_static_vec, data_dynamic_vec, df_features_extra, data
+        del data_dynamic_vec, df_features_extra, data_static_vec
         gc.collect()
 
         # merge labels
@@ -538,13 +537,12 @@ class DataProcessor:
         self.logger.info(f'Feature data saved: {output_path}, shape: {df_features.shape}')
         return output_path
 
-
     def preprocess(self, 
                    data_path: str, 
                    enc_col: str|None = None,
-                   data_tag: str = 'demo',
+                   data_tag: str = '',
                    chunk_size: int = 200000):  
-        
+        self.logger.info(f'Starting preprocessing for data: {data_path}, data_tag: {data_tag}, chunk_size: {chunk_size}')
         output_file_path = f'{self.root_path}/data/preproceed/{data_tag}.csv'
         if os.path.exists(output_file_path):
             self.logger.info(f'Output file already exists: {output_file_path}, skip preprocessing.')
@@ -555,7 +553,7 @@ class DataProcessor:
 
         if self.use_aes and enc_col:
             self.logger.info(f'Using AES encryption for column: "{enc_col}", transforming to column: "id" ')
-            data = self.decrypt_data(data=data, enc_col=enc_col)
+            data = decrypt_data(data=data, aes_key=self.aes_key, aes_iv=self.aes_iv, enc_col=enc_col)
 
         if 'label' in data.columns:
             is_training = True
@@ -568,7 +566,8 @@ class DataProcessor:
             self.logger.info(f'Training mode: processing all data at once, total rows: {total_rows}')
             self.preprocess_batch(
                 data=data,
-                is_training=is_training
+                is_training=is_training,
+                data_tag=data_tag
             )
         else:
             if total_rows > chunk_size:
@@ -583,6 +582,7 @@ class DataProcessor:
                     chunk_file_path = self.preprocess_batch(
                         data=data_chunk,
                         is_training=is_training,
+                        data_tag=data_tag,
                         chunk_id=i)
                     chunk_files_path.append(chunk_file_path)
                     del data_chunk
@@ -607,4 +607,3 @@ class DataProcessor:
                 )
 
             
-

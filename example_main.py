@@ -1,12 +1,13 @@
 # example_main.py
 
 import yaml
+import pandas as pd
+import joblib
+
 from src.config_manager import ConfigManager
 from src.data_processor import DataProcessor
 from src.trainer import Trainer
 from src.predictor import Predictor
-import pandas as pd
-import joblib
 
 
 
@@ -14,7 +15,7 @@ if __name__ == "__main__":
     processing_config = ConfigManager("example_processing_config.yaml")
 
     # source data path
-    train_data_path = "data/raw/train_data.csv" 
+    train_data_path = "data/raw/messages.csv" 
     pred_data_path = "data/raw/predict_data.csv"
 
     use_aes = processing_config.get('use_aes', False)
@@ -32,6 +33,8 @@ if __name__ == "__main__":
     tf_idf_config = processing_config.get('tf_idf_config', {})
     w2v_config = processing_config.get('w2v_config', {})
 
+    dynamic_vec_pooling_method = processing_config.get('dynamic_vec_pooling_method', 'mean')
+
     processor = DataProcessor(
         use_aes=use_aes,
         aes_key=aes_key,
@@ -40,19 +43,21 @@ if __name__ == "__main__":
         static_vec="word2vec",
         w2v_config=w2v_config,
         tf_idf_config=tf_idf_config,
-        dynamic_vec='roberta',
+        dynamic_vec='qwen3',
+        dynamic_vec_pooling_method=dynamic_vec_pooling_method,
         language='cn',
     )
 
     train_data_processed_path = processor.preprocess(data_path=train_data_path, 
-                                        enc_col='enc_id', 
-                                        data_tag='demo', 
+                                        enc_col='phone_id', 
+                                        data_tag='demo_train_bge_m3_w2v_mean', 
                                         chunk_size=200000)
     
-    pred_data_processed_path = processor.preprocess(data_path=pred_data_path, 
-                                        enc_col='enc_id', 
-                                        data_tag='demo', 
-                                        chunk_size=200000)
+    # pred_data_processed_path = processor.preprocess(
+    #                                     data_path=pred_data_path, 
+    #                                     enc_col='enc_id', 
+    #                                     data_tag='demo_qwen3_w2v_pred', 
+    #                                     chunk_size=200000)
 
     # # 训练
     # processed_df = pd.read_csv(processed_path)
@@ -67,3 +72,5 @@ if __name__ == "__main__":
     # predictor = Predictor("model/demo_rf.joblib")
     # preds = predictor.predict(X)
     # print("预测结果示例：", preds[:10])
+
+# modelscope download --model Qwen/Qwen3-Embedding-8B --local_dir ./Qwen3-Embedding-8B

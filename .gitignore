@@ -10,3 +10,4 @@ venv/
 .DS_Store
 model/
 catboost_info/
+dynamic_vec/
