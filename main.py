@@ -5,8 +5,6 @@ from src.config_manager import ConfigManager
 from src.data_processor import DataProcessor
 
 
-
-
 if __name__ == "__main__":
     processing_config = ConfigManager("processing_config.yaml")
 

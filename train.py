@@ -1,15 +1,17 @@
 import json
 from src.trainer import Trainer
-
+from src.config_manager import ConfigManager
 
 if __name__ == "__main__":
+
+    # load sign_id_vocab
     with open("data/resources/sign_id_map.json", "r") as f:
         sign_id_vocab = json.load(f)
     sign_vocab_size = len(sign_id_vocab)
 
     config = {
         'data_path': "data/preproceed/demo_train_qwen3_w2v_mean_sign_sequences.csv",
-        'model_tag': 'MLP_BGE_M3_W2V_mean_no_sign_sequences',
+        'model_tag': 'DNN_QWEN3_W2V_mean_sign_sequences',
         'label_col': 'label',
         'batch_size': 64,
         'epochs': 50,
@@ -20,7 +22,7 @@ if __name__ == "__main__":
             'activation': 'relu', # dice|prelu|softmax|linear
             'dropout': 0.1,
             'dice_dim': 2,
-            'use_sign_embedding': False,
+            'use_sign_embedding': True,
             'sign_seq_len': 50,
             'sign_vocab_size': sign_vocab_size,
             'sign_embedding_dim': 32,
@@ -28,5 +30,7 @@ if __name__ == "__main__":
 
         'device': 'mps'
     }
+
+
     trainer = Trainer(config)
     trainer.train()

@@ -1,15 +1,17 @@
 
 # SMS2Vec
 
-## Project Overview
-SMS2Vec is a modular pipeline for SMS text mining and classification. The project aims to process large-scale SMS datasets, extract static and dynamic text features, and train deep learning models for classification or prediction tasks. It supports flexible configuration, multiple feature extraction methods, and efficient training/inference workflows.
 
-## Purpose
-The goal of SMS2Vec is to provide a robust and extensible framework for:
-- Preprocessing raw SMS data, including encryption/decryption, filtering, and keyword extraction
-- Generating static (Word2Vec, TF-IDF) and dynamic (Qwen3, BGE-M3, RoBERTa) text embeddings
-- Training deep learning models (MLP) for SMS classification
-- Making predictions on new SMS data
+## Project Overview
+SMS2Vec is an engineering-oriented pipeline framework for vectorizing text information such as SMS and emails. It is a practical solution for transforming raw text records into feature vectors for downstream machine learning tasks. The framework combines statistical word vectors (TF-IDF, Word2Vec), pretrained language model embeddings (RoBERTa, Qwen3, BGE-M3), statistical features, and sequential SMS signature features, enabling flexible feature engineering and supporting large-scale data processing in real-world scenarios.
+
+Typical use cases include:
+- User interest modeling for ad targeting and recommendation recall
+- Binary classification of user text records (e.g., spam detection, intent prediction)
+- Feature engineering from raw text and signature sequences for downstream models
+
+## Environment
+This project requires **Python 3.10**.
 
 ## Installation
 Install dependencies with:
@@ -23,6 +25,8 @@ Input CSV files should contain columns such as:
 | id | message | sign | datetime | label |
 |----|---------|------|----------|-------|
 | ...| ...     | ...  | ...      | ...   |
+
+ID can be duplicated, and each row contain an unique message record.
 
 ## Usage
 
@@ -66,7 +70,18 @@ This will generate predictions and save results to `data/predict/`.
 - `data/`: Raw, processed, and prediction data
 - `requirements.txt`: Python dependencies
 
-## License
-See LICENSE file for details.
+
+## Experiment Records
+
+SMS2Vec provides a three-layer DNN as a baseline model, which demonstrates strong performance on industrial datasets. Notably, the inclusion of SMS signature sequence features leads to significant improvements on the validation set.
+
+| Method                                 | Val Acc | F1    | Recall | AUC    | KS     | Loss   |
+|-----------------------------------------|---------|-------|--------|--------|--------|--------|
+| Qwen3 Embedding + Word2Vec + MLP      | 0.7438  | 0.5196| 0.4243 | 0.8306 | 0.5120 | 0.5095 |
+| Qwen3 Embedding + Word2Vec + Sign Seq + MLP| 0.8333  | 0.7011| 0.5989 | 0.9196 | 0.6543 | 0.2377 |
+
+*Note: Experiment based on an small industrial dataset containing 89,248 message records from 31,296 users.*
+
+*"Sign Seq" refers to signature ID sequence features.*
 
 

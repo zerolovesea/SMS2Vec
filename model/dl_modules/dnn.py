@@ -3,7 +3,7 @@ import torch.nn as nn
 from .activation import activation_layer
 
 
-class MLP(nn.Module):
+class DNN(nn.Module):
     def __init__(self, 
                  input_dim: int, 
                  output_dim: int=2, 
@@ -51,7 +51,7 @@ class MLP(nn.Module):
         return self.net(x)
 
 if __name__ == '__main__':
-    model = MLP(input_dim=1024, output_dim=2, hidden_dims=[128, 64, 32], activation='dice', dropout=0.1, dice_dim=2)
+    model = DNN(input_dim=1024, output_dim=2, hidden_dims=[128, 64, 32], activation='dice', dropout=0.1, dice_dim=2)
     x = torch.randn(10240, 1024)
     out = model(x)
     print(out.shape)

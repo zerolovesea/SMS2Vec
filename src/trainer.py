@@ -5,7 +5,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.evaluation import evaluate
-from model.dl_modules.mlp import MLP
+from model.dl_modules.dnn import DNN
 from src.logger_manager import LoggerManager
 
 class Trainer:
@@ -56,7 +56,7 @@ class Trainer:
         
 
     def _build_model(self):
-        self.model = MLP(input_dim=self.input_dim, output_dim=2, **self.model_params)
+        self.model = DNN(input_dim=self.input_dim, output_dim=2, **self.model_params)
         self.model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         self.criterion = torch.nn.CrossEntropyLoss()
