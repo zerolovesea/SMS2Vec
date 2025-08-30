@@ -1,37 +1,72 @@
-# SMS2Vec Project
+
+# SMS2Vec
 
 ## Project Overview
-SMS2Vec is a modular pipeline for financial/text mining tasks, supporting data preprocessing, feature engineering, model training, and inference. It is designed for large-scale SMS datasets, supporting static (TF-IDF, Word2Vec) and dynamic (BERT, RoBERTa) feature extraction, and multiple model types (RF, XGBoost, LightGBM, CatBoost, DNN, etc.).
+SMS2Vec is a modular pipeline for SMS text mining and classification. The project aims to process large-scale SMS datasets, extract static and dynamic text features, and train deep learning models for classification or prediction tasks. It supports flexible configuration, multiple feature extraction methods, and efficient training/inference workflows.
 
-## Example Data Format
-The input CSV should contain the following columns:
+## Purpose
+The goal of SMS2Vec is to provide a robust and extensible framework for:
+- Preprocessing raw SMS data, including encryption/decryption, filtering, and keyword extraction
+- Generating static (Word2Vec, TF-IDF) and dynamic (Qwen3, BGE-M3, RoBERTa) text embeddings
+- Training deep learning models (MLP) for SMS classification
+- Making predictions on new SMS data
 
-| id         | message                                                                                                                        | sign           | datetime | label |
-|------------------|-------------------------------------------------------------------------------------------------------------------------------|----------------|----------|-------|
-| ++/2wZ+SulUjk7E0VUZRjg== | [AutoBrand] Holiday Sale! Visit our showroom for exclusive test drive gifts. Buy now and get a $500 voucher. To unsubscribe reply STOP. | [AutoBrand] | 05:30.9  | 1     |
-
-## Example Usage
-
-### Data Preprocessing
+## Installation
+Install dependencies with:
 ```bash
-python main_pipeline.py --mode preprocess --data data/input.csv --output data/preprocess/demo_preprocessed.csv --tag demo --static_vec tf-idf --dynamic_vec bert --index phone_id --is_train
+pip install -r requirements.txt
 ```
 
-### Model Training
-```bash
-python main_pipeline.py --mode train --data data/preprocess/demo_preprocessed.csv --model_type rf --tag demo
-```
+## Data Format
+Input CSV files should contain columns such as:
 
-### Inference
+| id | message | sign | datetime | label |
+|----|---------|------|----------|-------|
+| ...| ...     | ...  | ...      | ...   |
+
+## Usage
+
+### 1. Data Preprocessing
+Edit `processing_config.yaml` to set preprocessing options (encryption, filtering, feature extraction, etc).
+Run:
 ```bash
-python main_pipeline.py --mode predict --data data/predict.csv --model_path model/demo_rf.pkl --output data/predict_result.csv
+python main.py
 ```
+This will process raw data (e.g., `data/raw/messages.csv`) and output preprocessed features to `data/preproceed/`.
+
+### 2. Model Training
+Edit `train.py` to set training parameters and model configuration.
+Run:
+```bash
+python train.py
+```
+This will train an MLP model using the processed data and save the model to `model/models/`.
+
+### 3. Prediction
+Edit `predict.py` to set the input data and model path.
+Run:
+```bash
+python predict.py
+```
+This will generate predictions and save results to `data/predict/`.
 
 ## Features
-- Data preprocessing with configurable stopwords and index column
-- Static and dynamic feature extraction (TF-IDF, Word2Vec, RoBERTa, Qwen3, BGE-M3)
-- ID Embedding
-- Unified logging and modular code structure
-- Large file chunk prediction supported
+- Configurable preprocessing: AES encryption, filtering, keyword extraction
+- Static and dynamic text embeddings: Word2Vec, TF-IDF, Qwen3, BGE-M3
+- Deep learning model training: MLP with flexible architecture
+- Easy-to-modify configuration via YAML and Python scripts
+- Supports large-scale data and chunked processing
+
+## Directory Structure
+- `main.py`: Data preprocessing entry
+- `train.py`: Model training entry
+- `predict.py`: Prediction entry
+- `src/`: Core modules (config, data processing, training, logging)
+- `model/`: Model files and deep learning modules
+- `data/`: Raw, processed, and prediction data
+- `requirements.txt`: Python dependencies
+
+## License
+See LICENSE file for details.
 
 

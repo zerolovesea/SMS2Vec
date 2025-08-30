@@ -12,3 +12,9 @@ xgboost
 lightgbm
 pycryptodome
 jieba
+yaml
+nltk
+modelscope
+FlagEmbedding
+sentence-transformers
+scipy
