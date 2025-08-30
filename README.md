@@ -10,7 +10,10 @@ Typical use cases include:
 - Binary classification of user text records (e.g., spam detection, intent prediction)
 - Feature engineering from raw text and signature sequences for downstream models
 
+![sms2vec](asserts/sms2vec.png)
+
 ## Environment
+
 This project requires **Python 3.10**.
 
 ## Installation
@@ -83,5 +86,4 @@ SMS2Vec provides a three-layer DNN as a baseline model, which demonstrates stron
 *Note: Experiment based on an small industrial dataset containing 89,248 message records from 31,296 users.*
 
 *"Sign Seq" refers to signature ID sequence features.*
-
 
