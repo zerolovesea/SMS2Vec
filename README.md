@@ -29,30 +29,9 @@ python main_pipeline.py --mode predict --data data/predict.csv --model_path mode
 
 ## Features
 - Data preprocessing with configurable stopwords and index column
-- Static and dynamic feature extraction (TF-IDF, Word2Vec, BERT, RoBERTa)
-- Supports multiple model types: RF, XGBoost, LightGBM, CatBoost, DNN
+- Static and dynamic feature extraction (TF-IDF, Word2Vec, RoBERTa, Qwen3, BGE-M3)
+- ID Embedding
 - Unified logging and modular code structure
 - Large file chunk prediction supported
 
 
-
-# SMS2Vec
-
-本项目用于短信数据的特征工程、模型训练与推理。
-
-## 目录结构
-- src/ 主要代码模块
-- model/ 训练好的模型文件
-- data/ 数据文件
-- docs/ 项目文档
-
-## 环境构建
-推荐使用 [uv](https://github.com/astral-sh/uv) 管理 Python 依赖。
-
-```bash
-uv venv
-uv pip install -r requirements.txt
-```
-
-## 快速开始
-详见 docs/usage.md。

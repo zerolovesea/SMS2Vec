@@ -9,9 +9,9 @@ aes_iv: "20250703qwerzxcv"
 language: cn
 additional_stopwords: []
 filter_messages_setting:
-  keywords_to_remove:  ['快递', '外卖', '美食', '包裹', '物流']
   keep_keywords: ['贷', '借', '金融', '信用', '好分期', '花呗', '呗', '钱']
-
+  keywords_to_remove:  ['快递', '外卖', '美食', '包裹', '物流']
+  
 # vectorization|embedding config
 static_vec: word2vec
 static_vec_model_path: "./model/static_vec/demo"
@@ -34,6 +34,20 @@ tf_idf_config: {
         "max_df": 0.95,
         "sublinear_tf": True
     }
+
+# config for create_message_content_features
+# the processor will use these keywords to extract features from messages
+# it will count each keyword's occurrence in the message for each user: loan_count, risk_count, promo_count
+# you can customize these keywords based on your specific requirements
+messages_keywords_config: {
+        'loan' : ['贷款', '借钱', '放款', '额度', '利息', '还款', '分期', '信贷'],
+        'risk': ['逾期', '催收', '欠款', '违约', '法律', '起诉', '征信'],
+        'promo': ['优惠', '活动', '折扣', '免费', '赠送', '抽奖', '中奖']
+}
+
+
+# config for sign_id_sequences, used to set the max length of sequences of sign IDs for each user
+sign_id_sequences_max_len: 50
 
 chunk_size: 200000
 

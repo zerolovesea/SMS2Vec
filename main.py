@@ -1,22 +1,18 @@
 # example_main.py
 
-import yaml
 import pandas as pd
-import joblib
-
 from src.config_manager import ConfigManager
 from src.data_processor import DataProcessor
-from src.trainer import Trainer
-from src.predictor import Predictor
+
 
 
 
 if __name__ == "__main__":
-    processing_config = ConfigManager("example_processing_config.yaml")
+    processing_config = ConfigManager("processing_config.yaml")
 
     # source data path
     train_data_path = "data/raw/messages.csv" 
-    pred_data_path = "data/raw/predict_data.csv"
+    # pred_data_path = "data/raw/predict_data.csv"
 
     use_aes = processing_config.get('use_aes', False)
     aes_key = processing_config.get('aes_key', None)
@@ -28,12 +24,13 @@ if __name__ == "__main__":
         aes_iv = aes_iv.encode('utf-8')
 
     filter_messages_setting = processing_config.get('filter_messages_setting', {})
-    static_vec = processing_config.get('static_vec', None)
-    dynamic_vec = processing_config.get('dynamic_vec', None)
+    static_vec = processing_config.get('static_vec', None) # word2vec|tf-idf
+    dynamic_vec = processing_config.get('dynamic_vec', None) # qwen3|bge-m3|roberta
     tf_idf_config = processing_config.get('tf_idf_config', {})
     w2v_config = processing_config.get('w2v_config', {})
-
-    dynamic_vec_pooling_method = processing_config.get('dynamic_vec_pooling_method', 'mean')
+    dynamic_vec_pooling_method = processing_config.get('dynamic_vec_pooling_method', 'mean') # mean|max|min|sum
+    messages_keywords_config = processing_config.get('messages_keywords_config', {})
+    sign_id_sequences_max_len = processing_config.get('sign_id_sequences_max_len', 50)
 
     processor = DataProcessor(
         use_aes=use_aes,
@@ -45,12 +42,14 @@ if __name__ == "__main__":
         tf_idf_config=tf_idf_config,
         dynamic_vec='qwen3',
         dynamic_vec_pooling_method=dynamic_vec_pooling_method,
+        messages_keywords_config=messages_keywords_config,
+        sign_id_sequences_max_len=sign_id_sequences_max_len,
         language='cn',
     )
 
     train_data_processed_path = processor.preprocess(data_path=train_data_path, 
                                         enc_col='phone_id', 
-                                        data_tag='demo_train_bge_m3_w2v_mean', 
+                                        data_tag='demo_train_qwen3_w2v_mean_sign_sequences', 
                                         chunk_size=200000)
     
     # pred_data_processed_path = processor.preprocess(

@@ -7,27 +7,26 @@ Logger is managed via LoggerManager. All stopwords are configurable.
 """
 import os
 import gc
-import sys
 import torch
 import joblib
 import jieba
 import string
+import json
+from pathlib import Path
 
 import datetime
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from torch import Tensor
-import torch.nn.functional as F
-
 from gensim.models import Word2Vec
 from nltk.tokenize import word_tokenize
 from modelscope import snapshot_download
 from FlagEmbedding import BGEM3FlagModel
+from transformers import BertTokenizer, BertModel
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
-from transformers import BertTokenizer, BertModel
+
 from src.tool import decrypt_data
 from src.logger_manager import LoggerManager
 
@@ -44,6 +43,8 @@ class DataProcessor:
                  w2v_config: dict = {},
                  tf_idf_config: dict = {},
                  dynamic_vec_pooling_method: str = 'mean',
+                 messages_keywords_config: dict | None = None,
+                 sign_id_sequences_max_len: int = 50,   
                  language: str = 'cn'):
 
         self.logger = LoggerManager.get_logger()
@@ -76,6 +77,8 @@ class DataProcessor:
         self.static_vec_model_path = f'{self.root_path}/model/static_vec'
         os.makedirs(self.static_vec_model_path, exist_ok=True)
         self.dynamic_vec_pooling_method = dynamic_vec_pooling_method
+        self.messages_keywords_config = messages_keywords_config
+        self.sign_id_sequences_max_len = sign_id_sequences_max_len
         self.language = language
 
     def filter_messages(self, 
@@ -244,30 +247,28 @@ class DataProcessor:
             result = data.groupby('id')[embedding_columns].min().reset_index()
         elif pooling == 'sum':
             result = data.groupby('id')[embedding_columns].sum().reset_index()
-        elif pooling == 'attention':
-            from model.dl_modules.attention_pooling import AttentionPooling
-            embedding_dim = len(embedding_columns)
-            attn_pool = AttentionPooling(embedding_dim).to(self.device)
-            pooled_list = []
-            for uid, group in data.groupby('id'):
-                emb = torch.tensor(group[embedding_columns].values, dtype=torch.float32, device=self.device)
-                pooled = attn_pool(emb).detach().cpu().numpy()
-                pooled_list.append({'id': uid, **{f'embedding_{i}': pooled[i] for i in range(embedding_dim)}})
-            result = pd.DataFrame(pooled_list)
         else:
             self.logger.warning(f"Unknown pooling method '{pooling}', defaulting to mean.")
             result = data.groupby('id')[embedding_columns].mean().reset_index()
         self.logger.info(f'Embedding pooling ({pooling}) completed, unique user count: {len(result)}, feature dimension: {len(embedding_columns)}')
         return result  
     
-    def create_time_features(self, df):
-        df['datetime'] = pd.to_datetime(df['datetime'], format='mixed')
-        df['hour'] = df['datetime'].dt.hour
-        df['day_of_week'] = df['datetime'].dt.dayofweek
-        df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
-        df['is_work_time'] = df['hour'].between(9, 17).astype(int)
-        df['is_night'] = df['hour'].apply(lambda x: 1 if x >= 22 or x < 6 else 0)
-        user_time_features = df.groupby('id').agg({
+    def create_time_features(self, data):
+        """
+        Generate time-related features for each user, including hour, day of week, weekend indicator, work time indicator, and night indicator.
+        Aggregates these features per user, such as mean hour, hour std, unique hour count, unique weekday count, weekend ratio, work time ratio, night ratio, etc.
+        Args:
+            data (pd.DataFrame): Raw data containing 'datetime' and 'id' columns.
+        Returns:
+            pd.DataFrame: Time features for each user.
+        """
+        data['datetime'] = pd.to_datetime(data['datetime'], format='mixed')
+        data['hour'] = data['datetime'].dt.hour
+        data['day_of_week'] = data['datetime'].dt.dayofweek
+        data['is_weekend'] = data['day_of_week'].isin([5, 6]).astype(int)
+        data['is_work_time'] = data['hour'].between(9, 17).astype(int)
+        data['is_night'] = data['hour'].apply(lambda x: 1 if x >= 22 or x < 6 else 0)
+        user_time_features = data.groupby('id').agg({
             'hour': ['mean', 'std', 'nunique'],
             'day_of_week': ['nunique'],
             'is_weekend': ['mean', 'sum'],
@@ -277,32 +278,50 @@ class DataProcessor:
         user_time_features.columns = ['id'] + ['_'.join(col) for col in user_time_features.columns[1:]]
         return user_time_features
 
-    def create_sign_diversity_features(self, df):
-        sign_stats = df.groupby('id').agg({
+    def create_sign_diversity_features(self, data: pd.DataFrame):
+        """
+        Generate signature diversity features for each user, including unique signature count, total message count, signature diversity ratio, and dominant signature ratio.
+        Dominant signature ratio refers to the proportion of the most frequent signature for a user.
+        Args:
+            data (pd.DataFrame): Raw data containing 'id' and 'sign' columns.
+        Returns:
+            pd.DataFrame: Signature diversity features for each user.
+        """
+        sign_stats = data.groupby('id').agg({
             'sign': ['nunique', 'count'],
         }).reset_index()
         sign_stats.columns = ['id', 'unique_signs', 'total_messages']
         sign_stats['sign_diversity_ratio'] = sign_stats['unique_signs'] / sign_stats['total_messages']
-        most_common_sign_ratio = df.groupby('id')['sign'].apply(
+        most_common_sign_ratio = data.groupby('id')['sign'].apply(
             lambda x: x.value_counts().iloc[0] / len(x) if len(x) > 0 and len(x.value_counts()) > 0 else 0
         ).reset_index()
         most_common_sign_ratio.columns = ['id', 'dominant_sign_ratio']
         return sign_stats.merge(most_common_sign_ratio, on='id')
 
-    def create_message_content_features(self, df):
-        df['message_length'] = df['message'].str.len()
-        df['word_count'] = df['message'].str.split().str.len()
-        df['digit_count'] = df['message'].str.count(r'\d')
-        df['punctuation_count'] = df['message'].str.count(r'[，。！？；：""''（）【】《》、·…—]')
-        df['amount_count'] = df['message'].str.count(r'\d+元|\d+\.?\d*万|\d+\.?\d*千')
-        loan_keywords = ['贷款', '借钱', '放款', '额度', '利息', '还款', '分期', '信贷']
-        risk_keywords = ['逾期', '催收', '欠款', '违约', '法律', '起诉', '征信']
-        promo_keywords = ['优惠', '活动', '折扣', '免费', '赠送', '抽奖', '中奖']
-        for keyword_list, prefix in [(loan_keywords, 'loan'), (risk_keywords, 'risk'), (promo_keywords, 'promo')]:
-            df[f'{prefix}_keyword_count'] = df['message'].apply(
-                lambda x: sum(1 for kw in keyword_list if kw in x)
-            )
-        content_features = df.groupby('id').agg({
+    def create_message_content_features(self, data: pd.DataFrame, keywords_config: dict| None = None):
+        """
+        Generate message content features for each user, including message length, word count, digit count, punctuation count, amount-related word count, and loan/risk/promo keyword counts.
+        Aggregates these features per user, such as mean, std, min, max, sum, etc.
+        Args:
+            data (pd.DataFrame): Raw data containing 'id' and 'message' columns.
+        Returns:
+            pd.DataFrame: Content features for each user.
+        """
+        data['message_length'] = data['message'].str.len()
+        data['word_count'] = data['message'].str.split().str.len()
+        data['digit_count'] = data['message'].str.count(r'\d')
+        data['punctuation_count'] = data['message'].str.count(r'[，。！？；：""''（）【】《》、·…—]')
+
+        amount_pattern = r'(\d+元|\d+\.?\d*万|\d+\.?\d*千|\d+\.?\d*\s?(yuan|dollar|usd|rmb|bucks|cny|￥|$))'
+        data['amount_count'] = data['message'].str.count(amount_pattern)
+
+        if keywords_config is not None:
+            # Add keyword counts for each type in keywords_config
+            for prefix, keyword_list in keywords_config.items():
+                data[f'{prefix}_keyword_count'] = data['message'].apply(
+                    lambda x: sum(1 for kw in keyword_list if kw in x)
+                )
+        content_features = data.groupby('id').agg({
             'message_length': ['mean', 'std', 'min', 'max'],
             'word_count': ['mean', 'std'],
             'digit_count': ['mean', 'sum'],
@@ -315,22 +334,36 @@ class DataProcessor:
         content_features.columns = ['id'] + ['_'.join(col) for col in content_features.columns[1:]]
         return content_features
 
-    def create_area_features(self, df):
-        df['area_code'] = df['id'].str[3:7] 
-        df['carrier_code'] = df['id'].astype(str).str[:3]
-        carrier_stats = df.groupby('carrier_code').agg({
+    def create_area_features(self, data):
+        """
+        Generate area-related features for each user, including extracting carrier and area codes from phone number prefix, and counting user/message numbers for each carrier.
+        Args:
+            data (pd.DataFrame): Raw data containing 'id' and 'message' columns.
+        Returns:
+            pd.DataFrame: Data with carrier statistics features added.
+        """
+        data['area_code'] = data['id'].str[3:7] 
+        data['carrier_code'] = data['id'].astype(str).str[:3]
+        carrier_stats = data.groupby('carrier_code').agg({
             'id': 'nunique',
             'message': 'count'
         }).reset_index()
         carrier_stats.columns = ['carrier_code', 'carrier_user_count', 'carrier_message_count']
-        df = df.merge(carrier_stats, on='carrier_code', how='left')
-        return df
+        data = data.merge(carrier_stats, on='carrier_code', how='left')
+        return data
 
-    def create_messages_distribution_features(self, df):
-        df['datetime'] = pd.to_datetime(df['datetime'], format='mixed')
-        df['contain_slash'] = df['message'].str.count('/')
-        df['contain_url'] = df['message'].str.count('://')
-        user_features = df.groupby('id').agg({
+    def create_messages_distribution_features(self, data):
+        """
+        Generate message distribution features for each user, including total message count, unique signature count, message time span, message frequency, days since last message, and counts of slash/URL in messages.
+        Args:
+            data (pd.DataFrame): Raw data containing 'id', 'message', 'sign', 'datetime' columns.
+        Returns:
+            pd.DataFrame: Message distribution features for each user.
+        """
+        data['datetime'] = pd.to_datetime(data['datetime'], format='mixed')
+        data['contain_slash'] = data['message'].str.count('/')
+        data['contain_url'] = data['message'].str.count('://')
+        user_features = data.groupby('id').agg({
             'message': ['count'],
             'sign': ['nunique'],
             'datetime': ['min', 'max'],
@@ -347,34 +380,87 @@ class DataProcessor:
         user_features = user_features.drop(['datetime_min', 'datetime_max', 'time_span_days'], axis=1)
         return user_features
 
-    def create_comprehensive_features(self, df):
-        df['datetime'] = pd.to_datetime(df['datetime'], format='mixed', errors='coerce')
-        df = df.dropna(subset=['datetime'])
+    def create_comprehensive_features(self, data):
+        """
+        Integrate all feature engineering methods to generate comprehensive features for each user.
+        Includes time features, content features, signature diversity features, area features, message distribution features, and fills missing values.
+        Args:
+            data (pd.DataFrame): Raw data.
+        Returns:
+            pd.DataFrame: Comprehensive features for each user.
+        """
+        data['datetime'] = pd.to_datetime(data['datetime'], format='mixed', errors='coerce')
+        data = data.dropna(subset=['datetime'])
 
-        time_features = self.create_time_features(df)
-        content_features = self.create_message_content_features(df)
-        sign_features = self.create_sign_diversity_features(df)
-        df_with_area = self.create_area_features(df)
-        area_features = df_with_area.groupby('id').agg({
+        time_features = self.create_time_features(data)
+        content_features = self.create_message_content_features(data, self.messages_keywords_config)
+        sign_features = self.create_sign_diversity_features(data)
+        data_with_area = self.create_area_features(data)
+        area_features = data_with_area.groupby('id').agg({
             'carrier_user_count': 'first',
             'carrier_message_count': 'first'
         }).reset_index()
-        messages_distribution_features = self.create_messages_distribution_features(df)
+        messages_distribution_features = self.create_messages_distribution_features(data)
         all_features = time_features
         feature_dfs = [content_features,sign_features,area_features,messages_distribution_features]
         for i, feature_df in enumerate(feature_dfs):
             all_features = all_features.merge(feature_df, on='id', how='left')
-        self.logger.info(f"Comprehensive features shape: {all_features.shape}")
         for col in all_features.columns:
             if all_features[col].isnull().sum()>0:
                 all_features[col] = all_features[col].fillna(0)
         return all_features
+
+    def create_sign_sequences(self, data: pd.DataFrame, max_seq_len: int = 20, mapping_path: str = None, is_train: bool = True, oov_id: int = 99999):
+        """
+        For each user, generate a sign id sequence (ordered by datetime from newest to oldest, not deduplicated),
+        assign a unique id to each sign, save/load the id-sign mapping dict, and return a DataFrame with user id and sign id sequence (for model embedding input).
+        Args:
+            data (pd.DataFrame): Must contain 'id', 'sign', 'datetime' columns.
+            max_seq_len (int): Max sign sequence length per user (pad/truncate).
+            mapping_path (str): Path to save/load sign id mapping dict.
+            oov_id (int): id for out-of-vocabulary signs in inference.
+        Returns:
+            pd.DataFrame: Columns ['id', 'sign_id_seq_0', ..., 'sign_id_seq_{max_seq_len-1}']
+        """
+        data_sorted = data.sort_values(['id', 'datetime'], ascending=[True, False])
+        if mapping_path is None:
+            mapping_path = f'{self.root_path}/data/resources/sign_id_map.json'
+        Path(os.path.dirname(mapping_path)).mkdir(parents=True, exist_ok=True)
+
+        if is_train:
+            sign_list = data_sorted['sign'].dropna().unique().tolist()
+            sign2id = {sign: idx+1 for idx, sign in enumerate(sign_list)}  # 0 for padding
+            with open(mapping_path, 'w', encoding='utf-8') as f:
+                json.dump(sign2id, f, ensure_ascii=False)
+            self.logger.info(f'Sign to id mapping saved to {mapping_path}, total unique signs: {len(sign2id)}')
+        else:
+            if not os.path.exists(mapping_path):
+                raise FileNotFoundError(f"Sign id mapping file not found: {mapping_path}")
+            with open(mapping_path, 'r', encoding='utf-8') as f:
+                sign2id = json.load(f)
+            self.logger.info(f'Sign to id mapping loaded from {mapping_path}, total unique signs: {len(sign2id)}')
+
+        user_sign_seqs = data_sorted.groupby('id')['sign'].apply(list)
+
+        if is_train:
+            user_sign_id_seqs = user_sign_seqs.apply(lambda seq: [sign2id.get(s, 0) for s in seq])
+        else:
+            user_sign_id_seqs = user_sign_seqs.apply(lambda seq: [sign2id.get(s, oov_id) for s in seq])
+        user_sign_id_seqs = user_sign_id_seqs.apply(lambda seq: (seq + [0]*max_seq_len)[:max_seq_len])
+
+        user_ids = user_sign_id_seqs.index.tolist()
+        sign_id_seqs = np.array(user_sign_id_seqs.tolist())
+        sign_id_cols = [f'sign_id_seq_{i}' for i in range(max_seq_len)]
+        df_sign_id = pd.DataFrame(sign_id_seqs, columns=sign_id_cols)
+        df_sign_id['id'] = user_ids
+        return df_sign_id[['id'] + sign_id_cols]
 
     def preprocess_batch(self, 
                          data: pd.DataFrame, 
                          is_training: bool=True, 
                          data_tag: str = 'demo',
                          chunk_id: int|None=None):
+        
         df_label = None
         if is_training:
             df_label = data[['id', 'label']]
@@ -505,15 +591,21 @@ class DataProcessor:
         gc.collect()
 
         # create extra features
-        df_features_extra = self.create_comprehensive_features(data)
+        data_features_extra = self.create_comprehensive_features(data)
+        self.logger.info(f'Extra features shape: {data_features_extra.shape}')
 
-        for data in [data_static_vec, data_dynamic_vec, df_features_extra]:
+        # create sign id sequences
+        data_sign_sequences = self.create_sign_sequences(data, max_seq_len=self.sign_id_sequences_max_len)
+        self.logger.info(f'Sign id sequences created, shape: {data_sign_sequences.shape}')
+
+        for data in [data_static_vec, data_dynamic_vec, data_features_extra, data_sign_sequences]:
             data['id'] = data['id'].astype(str)
 
         df_features = pd.merge(data_dynamic_vec, data_static_vec, on='id', how='inner')
-        df_features = pd.merge(df_features, df_features_extra, on='id', how='left')
+        df_features = pd.merge(df_features, data_features_extra, on='id', how='left')
+        df_features = pd.merge(df_features, data_sign_sequences, on='id', how='left')
 
-        del data_dynamic_vec, df_features_extra, data_static_vec
+        del data_dynamic_vec, data_features_extra, data_static_vec, data_sign_sequences
         gc.collect()
 
         # merge labels
