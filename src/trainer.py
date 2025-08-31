@@ -31,8 +31,8 @@ class Trainer:
         sign_cols = [c for c in df.columns if c.startswith('sign_id_seq_')]
         feature_cols = [c for c in df.columns if c not in sign_cols + [self.label_col, 'id']]
         X = df[feature_cols].values.astype(float)
-
-        sign_id_seq = df[sign_cols].values.astype(int) if sign_cols else None
+        
+        sign_id_seq = df[sign_cols].fillna(0).values.astype(int) if sign_cols else None
         y = df[self.label_col].values.astype(int)
 
         X_train, X_val, sign_train, sign_val, y_train, y_val = train_test_split(

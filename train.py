@@ -7,7 +7,8 @@ if __name__ == "__main__":
     # load sign_id_vocab
     with open("data/resources/sign_id_map.json", "r") as f:
         sign_id_vocab = json.load(f)
-    sign_vocab_size = len(sign_id_vocab)
+
+    sign_vocab_size = max(sign_id_vocab.values()) + 1
 
     config = {
         'data_path': "data/preproceed/demo_train_qwen3_w2v_mean_sign_sequences.csv",
