@@ -28,7 +28,7 @@ if __name__ == "__main__":
             'sign_embedding_dim': 32,
         },
 
-        'device': 'mps'
+        'device': 'cpu'
     }
 
 

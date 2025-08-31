@@ -80,6 +80,13 @@ class DataProcessor:
         self.messages_keywords_config = messages_keywords_config
         self.sign_id_sequences_max_len = sign_id_sequences_max_len
         self.language = language
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
+
 
     def filter_messages(self, 
                         data: pd.DataFrame, 
@@ -186,14 +193,17 @@ class DataProcessor:
         elif dynamic_vec == 'qwen3':
             model_dir = snapshot_download('Qwen/Qwen3-Embedding-0.6B', cache_dir='./model/dynamic_vec')
             model = SentenceTransformer(model_dir)
-            
+
             all_embeddings = []
             for i in tqdm(range(0, len(texts), batch_size), desc="Qwen3 Embedding", leave=True, dynamic_ncols=True):
                 batch_embeddings = model.encode(texts[i:i+batch_size])
                 all_embeddings.extend(batch_embeddings)
                 del batch_embeddings
                 gc.collect()
-                torch.mps.empty_cache()
+                if self.device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                elif self.device.type == 'mps':
+                    torch.mps.empty_cache()
             return all_embeddings
 
         elif dynamic_vec in ['bert', 'roberta']:
@@ -204,12 +214,8 @@ class DataProcessor:
             tokenizer = BertTokenizer.from_pretrained(model_name, cache_dir='./model/dynamic_vec')
             model = BertModel.from_pretrained(model_name, cache_dir='./model/dynamic_vec')
 
-            # embedding_model_path = '/home/zhoufeng/.cache/modelscope/hub/models/dienstag/chinese-roberta-wwm-ext'
-            # tokenizer = BertTokenizer.from_pretrained(embedding_model_path)
-            # model = BertModel.from_pretrained(embedding_model_path)
-
             model.eval()
-            model.to(device)
+            # model.to(self.device)
             all_embeddings = []
             for i in tqdm(range(0, len(texts), batch_size), desc=f"{dynamic_vec} Embedding", leave=True, dynamic_ncols=True):
                 batch_texts = texts[i:i+batch_size]
@@ -410,7 +416,7 @@ class DataProcessor:
                 all_features[col] = all_features[col].fillna(0)
         return all_features
 
-    def create_sign_sequences(self, data: pd.DataFrame, max_seq_len: int = 20, mapping_path: str = None, is_train: bool = True, oov_id: int = 99999):
+    def create_sign_sequences(self, data: pd.DataFrame, max_seq_len: int = 20, mapping_path: str = None, is_train: bool = True, oov_id: int = 0):
         """
         For each user, generate a sign id sequence (ordered by datetime from newest to oldest, not deduplicated),
         assign a unique id to each sign, save/load the id-sign mapping dict, and return a DataFrame with user id and sign id sequence (for model embedding input).
