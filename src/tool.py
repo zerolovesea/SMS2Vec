@@ -21,4 +21,4 @@ def decrypt_data(data: pd.DataFrame, aes_key, aes_iv, enc_col: str = 'phone_id')
 def has_header(filepath):
     with open(filepath, 'r', encoding='utf-8') as f:
         first_row = next(csv.reader(f))
-        return 'phone_id' in first_row and 'message' in first_row
+        return  'message' in first_row

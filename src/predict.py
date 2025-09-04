@@ -6,12 +6,18 @@ from model.dl_modules.dnn import DNN
 from src.logger_manager import LoggerManager
 from torch.utils.data import DataLoader, TensorDataset
 
-def predict(model_path, data_path, data_key, batch_size=10000, device='cpu'):
+def predict(model_path: str, 
+            data_path: str, 
+            data_key: str, 
+            batch_size: int = 10000, 
+            device: str = 'cpu'):
+    """
+    Run inference on the model with the given data.
+    """
     logger = LoggerManager.get_logger()
     logger.info(f"Loading model from {model_path}")
     checkpoint = torch.load(model_path, map_location=device)
     output_path = f"data/predict/{data_key}.csv"
-
 
     logger.info(f"Reading data from {data_path} in chunks of {batch_size}")
     model_params = checkpoint.get('model_params', None)
@@ -78,4 +84,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
     predict(args.model, args.data, args.data_key, args.batch_size, args.device)
 
-    # python predict.py --model /home/zhoufeng/sms2vec/model/models/DNN_QWEN3_W2V_mean_HFQ_ABSEED_250820_sign_sequences_0.897.pt --data /home/zhoufeng/sms2vec/data/preproceed/hfq_stacking_apply_qwen3_w2v_mean_sign_sequences.csv --data_key TMP_DNN-QWEN3-W2V-SEQ-HFQ-ABSEED-250820-20250904 --batch_size 10000 --device cuda

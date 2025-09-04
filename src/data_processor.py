@@ -115,7 +115,7 @@ class DataProcessor:
             self.device = torch.device('cpu')
             self.logger.info('Detecting CPU')
 
-        self.project = self.project
+        self.project = project
         self.vocab_path = f'{self.root_path}/data/resources/{self.project}'
         self.static_vec_path = f'{self.root_path}/model/static_vec/{self.project}'
         
@@ -675,8 +675,8 @@ class DataProcessor:
                    data_path: str, 
                    enc_col: str|None = None,
                    data_tag: str = '',
-                   chunk_size: int = 200000):  
-        
+                   chunk_size: int = 200000) -> str:
+
         self.logger.info(f'Starting preprocessing for data: {data_path}, data_tag: {data_tag}, chunk_size: {chunk_size}')
         output_file_path = f'{self.root_path}/data/preproceed/{self.project}/{data_tag}.csv'
         is_training = False
@@ -751,5 +751,4 @@ class DataProcessor:
                     is_training=is_training,
                     data_tag=data_tag
                 )
-
-            
+        return output_file_path

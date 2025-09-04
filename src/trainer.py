@@ -9,17 +9,35 @@ from model.dl_modules.dnn import DNN
 from src.logger_manager import LoggerManager
 
 class Trainer:
-    def __init__(self, config: dict):
-        self.config = config
-        self.device = torch.device(config.get('device', 'cpu'))
-        self.model_tag = config.get('model_tag', 'MLP_BGE_M3_W2V_mean')
-        self.data_path = config['data_path']
-        self.label_col = config.get('label_col', 'label')
-        self.batch_size = config.get('batch_size', 64)
-        self.epochs = config.get('epochs', 50)
-        self.patience = config.get('patience', 10)
-        self.model_params = config.get('model_params', {})
-        self.lr = config.get('lr', 1e-3)
+    def __init__(self,
+                 data_path,
+                 project='demo',
+                 model_tag='demo_model',
+                 label_col='label',
+                 batch_size=64,
+                 epochs=50,
+                 patience=10,
+                 lr=1e-3,
+                 model_params=None,
+                 **kwargs):
+        self.data_path = data_path
+        self.project = project
+        self.model_tag = model_tag
+        self.label_col = label_col
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.patience = patience
+        self.model_params = model_params if model_params is not None else {}
+        self.lr = lr
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+            self.logger.info('Detecting GPU: cuda')
+        elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+            self.logger.info('Detecting GPU: mps')
+        else:
+            self.device = torch.device('cpu')
+            self.logger.info('Detecting CPU')
 
         self._prepare_data()
         self._build_model()
@@ -85,6 +103,16 @@ class Trainer:
                 loss = self.criterion(logits, y_batch)
                 loss.backward()
                 self.optimizer.step()
+
+            checkpoint_path = f"model/models/{self.project}/checkpoint.pt"
+            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+            torch.save({
+                'state_dict': self.model.state_dict(),
+                'input_dim': self.input_dim,
+                'model_params': self.model_params
+            }, checkpoint_path)
+            self.logger.info(f"Checkpoint model saved to {checkpoint_path} (epoch {epoch+1})")
+
             acc, f1, recall, auc, ks = evaluate(self.model, self.val_loader, self.device)
             self.scheduler.step(acc)
             self.logger.info(f"Epoch {epoch + 1}/{self.epochs} | Val Acc: {acc:.4f} | F1: {f1:.4f} | Recall: {recall:.4f} | AUC: {auc:.4f} | KS: {ks:.4f} | Loss: {loss:.4f}")
@@ -99,10 +127,10 @@ class Trainer:
             if no_improve_count >= self.patience:
                 self.logger.info(f"Validation accuracy has not improved for {self.patience} consecutive epochs. Early stopping. Best validation accuracy: {best_acc:.4f}")
                 break
-        self._save_model(best_model_state, best_auc)
+        self._save_model(best_model_state)
 
-    def _save_model(self, state, best_auc):
-        save_path = f"model/models/{self.model_tag}_{best_auc:.3f}.pt"
+    def _save_model(self, state):
+        save_path = f"model/models/{self.project}/best.pt"
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         if state is not None:
             torch.save({
