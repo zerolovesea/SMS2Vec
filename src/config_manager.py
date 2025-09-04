@@ -2,7 +2,8 @@ import yaml
 import os
 
 class ConfigManager:
-    def __init__(self, config_path: str = None):
+    def __init__(self, 
+                 config_path: str | None = None):
         if config_path is None:
             root_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
             config_path = os.path.join(root_path, 'config.yaml')

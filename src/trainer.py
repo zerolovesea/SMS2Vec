@@ -10,15 +10,15 @@ from src.logger_manager import LoggerManager
 
 class Trainer:
     def __init__(self,
-                 data_path,
-                 project='demo',
-                 model_tag='demo_model',
-                 label_col='label',
-                 batch_size=64,
-                 epochs=50,
-                 patience=10,
-                 lr=1e-3,
-                 model_params=None,
+                 data_path: str,
+                 project: str = 'demo',
+                 model_tag: str = 'demo_model',
+                 label_col: str = 'label',
+                 batch_size: int = 64,
+                 epochs: int = 50,
+                 patience: int = 10,
+                 lr: float = 1e-3,
+                 model_params: dict = {},
                  **kwargs):
         self.logger = LoggerManager.get_logger()
         self.data_path = data_path

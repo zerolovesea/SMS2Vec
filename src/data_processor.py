@@ -217,7 +217,14 @@ class DataProcessor:
         return all(char in chinese_punctuation + english_punctuation for char in word)
 
 
-    def create_dynamic_vec(self, dynamic_vec, texts, device, batch_size=32, max_length=128, language='cn'):
+    def create_dynamic_vec(self, 
+                           dynamic_vec: str, 
+                           texts: list[str], 
+                           device: torch.device, 
+                           batch_size: int = 32, 
+                           max_length: int = 128, 
+                           language: str = 'cn'):
+        
         if dynamic_vec == 'bge-m3':
             model_dir = snapshot_download('BAAI/bge-m3', cache_dir='./model/dynamic_vec')
             model = BGEM3FlagModel(model_dir, use_fp16=True)
@@ -292,7 +299,7 @@ class DataProcessor:
         self.logger.info(f'Embedding pooling ({pooling}) completed, unique user count: {len(result)}, feature dimension: {len(embedding_columns)}')
         return result  
     
-    def create_time_features(self, data):
+    def create_time_features(self, data: pd.DataFrame):
         """
         Generate time-related features for each user, including hour, day of week, weekend indicator, work time indicator, and night indicator.
         Aggregates these features per user, such as mean hour, hour std, unique hour count, unique weekday count, weekend ratio, work time ratio, night ratio, etc.
@@ -373,7 +380,7 @@ class DataProcessor:
         content_features.columns = ['id'] + ['_'.join(col) for col in content_features.columns[1:]]
         return content_features
 
-    def create_area_features(self, data):
+    def create_area_features(self, data: pd.DataFrame):
         """
         Generate area-related features for each user, including extracting carrier and area codes from phone number prefix, and counting user/message numbers for each carrier.
         Args:
@@ -393,7 +400,7 @@ class DataProcessor:
         
         return data
 
-    def create_messages_distribution_features(self, data):
+    def create_messages_distribution_features(self, data: pd.DataFrame):
         """
         Generate message distribution features for each user, including total message count, unique signature count, message time span, message frequency, days since last message, and counts of slash/URL in messages.
         Args:
@@ -421,7 +428,7 @@ class DataProcessor:
         user_features = user_features.drop(['datetime_min', 'datetime_max', 'time_span_days'], axis=1)
         return user_features
 
-    def create_comprehensive_features(self, data):
+    def create_comprehensive_features(self, data: pd.DataFrame):
         """
         Integrate all feature engineering methods to generate comprehensive features for each user.
         Includes time features, content features, signature diversity features, area features, message distribution features, and fills missing values.
@@ -457,7 +464,7 @@ class DataProcessor:
                 all_features[col] = all_features[col].fillna(0)
         return all_features
 
-    def create_sign_sequences(self, data: pd.DataFrame, max_seq_len: int = 20, data_tag: str = 'demo', is_train: bool = True, oov_id: int = 0):
+    def create_sign_sequences(self, data: pd.DataFrame, max_seq_len: int = 20, is_train: bool = True, oov_id: int = 0):
         """
         For each user, generate a sign id sequence (ordered by datetime from newest to oldest, not deduplicated),
         assign a unique id to each sign, save/load the id-sign mapping dict, and return a DataFrame with user id and sign id sequence (for model embedding input).
@@ -643,7 +650,6 @@ class DataProcessor:
         # create sign id sequences
         data_sign_sequences = self.create_sign_sequences(data=data, 
                                                          max_seq_len=self.sign_id_sequences_max_len, 
-                                                         data_tag=data_tag,
                                                          oov_id=1,
                                                          is_train=is_training)
         
