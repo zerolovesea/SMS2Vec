@@ -16,6 +16,7 @@ class DNN(nn.Module):
                  sign_seq_len: int=50, 
                  use_sign_embedding: bool=False, 
                  sign_pooling: str='mean'):
+        
         super().__init__()
         self.use_sign_embedding = use_sign_embedding
         if use_sign_embedding:

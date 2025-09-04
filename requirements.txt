@@ -4,7 +4,7 @@ scikit-learn==1.7.0
 joblib==1.5.1
 tqdm==4.67.1
 loguru==0.7.3
-# torch==2.7.1+cu128 
+torch==2.7.1+cu128 
 transformers==4.53.0
 gensim==4.3.3
 catboost==1.2.8

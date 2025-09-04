@@ -117,8 +117,9 @@ class DataProcessor:
 
         self.project = project
         self.vocab_path = f'{self.root_path}/data/resources/{self.project}'
+        os.makedirs(self.vocab_path, exist_ok=True)
         self.static_vec_path = f'{self.root_path}/model/static_vec/{self.project}'
-        
+        os.makedirs(self.static_vec_path, exist_ok=True)
 
     def filter_messages(self, 
                         data: pd.DataFrame, 

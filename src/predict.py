@@ -23,7 +23,11 @@ def predict(model_path: str,
     model_params = checkpoint.get('model_params', None)
     input_dim = checkpoint.get('input_dim', None)
     model = DNN(input_dim=input_dim, output_dim=2, **model_params)
-    model.load_state_dict(checkpoint if isinstance(checkpoint, dict) else checkpoint)
+
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
     model.to(device)
     model.eval()
     logger.info("Model loaded and ready for prediction.")
@@ -64,7 +68,7 @@ def predict(model_path: str,
                 x_batch, idx_batch = batch
                 x_batch = x_batch.to(device)
                 logits = model(x_batch)
-            probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+            probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
             batch_ids = [ids[i.item()] for i in idx_batch]
             df_pred = pd.DataFrame({'id': batch_ids, 'score': probs})
             results.append(df_pred)

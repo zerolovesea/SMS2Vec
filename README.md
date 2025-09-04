@@ -33,7 +33,7 @@ ID can be duplicated, and each row contain an unique message record.
 
 ## Usage
 
-You can run the entire pipeline by executing `main.py`, which covers:
+You can run the entire pipeline by executing `example_main.py`, which covers:
 
 1. Data preprocessing
 2. Model training
@@ -49,7 +49,7 @@ You can run the entire pipeline by executing `main.py`, which covers:
 
 3. Run the main program:
 	```bash
-	python main.py
+	python example_main.py
 	```
 
 The program will automatically:
@@ -57,13 +57,13 @@ The program will automatically:
 - Train a deep learning model (DNN, with optional signature sequence features)
 - Run inference on prediction data and output results
 
-For custom workflows, refer to `main.py` and modules in the `src/` directory.
+For custom workflows, refer to `example_main.py` and modules in the `src/` directory.
 - Deep learning model training: MLP with flexible architecture
 - Easy-to-modify configuration via YAML and Python scripts
 - Supports large-scale data and chunked processing
 
 ## Directory Structure
-- `main.py`: Data preprocessing/Trainer entry
+- `example_main.py`: Data preprocessing/Trainer entry
 - `src/`: Core modules (config, data processing, training, logging, etc.)
 - `model/`: Model files and deep learning modules
 - `data/`: Raw, processed, and prediction data

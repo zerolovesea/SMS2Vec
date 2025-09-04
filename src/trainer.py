@@ -20,6 +20,7 @@ class Trainer:
                  lr=1e-3,
                  model_params=None,
                  **kwargs):
+        self.logger = LoggerManager.get_logger()
         self.data_path = data_path
         self.project = project
         self.model_tag = model_tag
@@ -41,8 +42,6 @@ class Trainer:
 
         self._prepare_data()
         self._build_model()
-
-        self.logger = LoggerManager.get_logger()
 
     def _prepare_data(self):
         df = pd.read_csv(self.data_path)
