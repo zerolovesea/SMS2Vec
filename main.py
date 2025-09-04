@@ -9,8 +9,8 @@ if __name__ == "__main__":
     processing_config = ConfigManager("processing_config.yaml")
 
     # source data path
-    train_data_path = "data/raw/messages.csv" 
-    # pred_data_path = "data/raw/predict_data.csv"
+    train_data_path = "data/raw/train_data.csv" 
+    #pred_data_path = "/home/zhoufeng/extracted_content/message_sample_20250901_pred_hfq_apply_stacking_1000w_250901.csv"
 
     use_aes = processing_config.get('use_aes', False)
     aes_key = processing_config.get('aes_key', None)
@@ -42,6 +42,7 @@ if __name__ == "__main__":
         dynamic_vec_pooling_method=dynamic_vec_pooling_method,
         messages_keywords_config=messages_keywords_config,
         sign_id_sequences_max_len=sign_id_sequences_max_len,
+        project='demo',
         language='cn',
     )
 

@@ -105,7 +105,11 @@ class Trainer:
         save_path = f"model/models/{self.model_tag}_{best_auc:.3f}.pt"
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         if state is not None:
-            torch.save(state, save_path)
+            torch.save({
+                'state_dict': state,
+                'input_dim': self.input_dim,
+                'model_params': self.model_params
+            }, save_path)
             self.logger.info(f"Best model saved to {save_path}")
 
 

@@ -7,17 +7,16 @@ Logger is managed via LoggerManager. All stopwords are configurable.
 """
 import os
 import gc
+import json
+import jieba
 import torch
 import joblib
-import jieba
 import string
-import json
-from pathlib import Path
-
 import datetime
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from pathlib import Path
 
 from gensim.models import Word2Vec
 from nltk.tokenize import word_tokenize
@@ -27,7 +26,7 @@ from transformers import BertTokenizer, BertModel
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-from src.tool import decrypt_data
+from src.tool import decrypt_data, has_header
 from src.logger_manager import LoggerManager
 
 
@@ -44,13 +43,40 @@ class DataProcessor:
                  tf_idf_config: dict = {},
                  dynamic_vec_pooling_method: str = 'mean',
                  messages_keywords_config: dict | None = None,
-                 sign_id_sequences_max_len: int = 50,   
+                 sign_id_sequences_max_len: int = 50, 
+                 project: str = 'demo',
                  language: str = 'cn'):
+        """
+        Initialize a DataProcessor instance for SMS feature engineering and preprocessing.
 
+        Args:
+            use_aes (bool): Whether to use AES decryption for phone id column.
+            aes_key (bytes, optional): AES decryption key.
+            aes_iv (bytes, optional): AES initialization vector.
+            additional_stopwords (set[str], optional): Additional stopwords to add to default stopwords.
+            filter_messages_setting (dict, optional): Message filtering configuration (keywords to remove/keep).
+            static_vec (str, optional): Static vector type ('tf-idf', 'word2vec', etc.).
+            dynamic_vec (str, optional): Dynamic vector type ('bge-m3', 'qwen3', 'bert', etc.).
+            w2v_config (dict): Word2Vec configuration parameters.
+            tf_idf_config (dict): TF-IDF configuration parameters.
+            dynamic_vec_pooling_method (str): Pooling method for dynamic vectors ('mean', 'max', etc.).
+            messages_keywords_config (dict, optional): Keyword configuration for message content features.
+            sign_id_sequences_max_len (int): Max length for sign id sequences per user.
+            project (str): Project name, used for resource path.
+            language (str): Language type ('cn' for Chinese, 'en' for English).
+
+        Initializes:
+            - Logger
+            - Root path
+            - Device (cuda/mps/cpu)
+            - Stopwords (with optional additional stopwords)
+            - Feature extraction configs
+            - Resource paths
+        """
         self.logger = LoggerManager.get_logger()
 
         self.root_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         self.use_aes = use_aes
         self.aes_key = aes_key
         self.aes_iv = aes_iv
@@ -74,19 +100,25 @@ class DataProcessor:
         self.w2v_config = w2v_config
         self.tf_idf_config = tf_idf_config
 
-        self.static_vec_model_path = f'{self.root_path}/model/static_vec'
-        os.makedirs(self.static_vec_model_path, exist_ok=True)
         self.dynamic_vec_pooling_method = dynamic_vec_pooling_method
         self.messages_keywords_config = messages_keywords_config
         self.sign_id_sequences_max_len = sign_id_sequences_max_len
         self.language = language
+
         if torch.cuda.is_available():
             self.device = torch.device('cuda')
+            self.logger.info('Detecting GPU: cuda')
         elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
             self.device = torch.device('mps')
+            self.logger.info('Detecting GPU: mps')
         else:
             self.device = torch.device('cpu')
+            self.logger.info('Detecting CPU')
 
+        self.project = self.project
+        self.vocab_path = f'{self.root_path}/data/resources/{self.project}'
+        self.static_vec_path = f'{self.root_path}/model/static_vec/{self.project}'
+        
 
     def filter_messages(self, 
                         data: pd.DataFrame, 
@@ -215,7 +247,7 @@ class DataProcessor:
             model = BertModel.from_pretrained(model_name, cache_dir='./model/dynamic_vec')
 
             model.eval()
-            # model.to(self.device)
+            model.to(self.device)
             all_embeddings = []
             for i in tqdm(range(0, len(texts), batch_size), desc=f"{dynamic_vec} Embedding", leave=True, dynamic_ncols=True):
                 batch_texts = texts[i:i+batch_size]
@@ -348,14 +380,16 @@ class DataProcessor:
         Returns:
             pd.DataFrame: Data with carrier statistics features added.
         """
-        data['area_code'] = data['id'].str[3:7] 
-        data['carrier_code'] = data['id'].astype(str).str[:3]
-        carrier_stats = data.groupby('carrier_code').agg({
-            'id': 'nunique',
-            'message': 'count'
-        }).reset_index()
-        carrier_stats.columns = ['carrier_code', 'carrier_user_count', 'carrier_message_count']
-        data = data.merge(carrier_stats, on='carrier_code', how='left')
+        if self.language=='cn':
+            data['area_code'] = data['id'].str[3:7] 
+            data['carrier_code'] = data['id'].astype(str).str[:3]
+            carrier_stats = data.groupby('carrier_code').agg({
+                'id': 'nunique',
+                'message': 'count'
+            }).reset_index()
+            carrier_stats.columns = ['carrier_code', 'carrier_user_count', 'carrier_message_count']
+            data = data.merge(carrier_stats, on='carrier_code', how='left')
+        
         return data
 
     def create_messages_distribution_features(self, data):
@@ -402,13 +436,19 @@ class DataProcessor:
         content_features = self.create_message_content_features(data, self.messages_keywords_config)
         sign_features = self.create_sign_diversity_features(data)
         data_with_area = self.create_area_features(data)
-        area_features = data_with_area.groupby('id').agg({
-            'carrier_user_count': 'first',
-            'carrier_message_count': 'first'
-        }).reset_index()
         messages_distribution_features = self.create_messages_distribution_features(data)
         all_features = time_features
-        feature_dfs = [content_features,sign_features,area_features,messages_distribution_features]
+
+        if self.language == 'cn':
+            area_features = data_with_area.groupby('id').agg({
+                'carrier_user_count': 'first',
+                'carrier_message_count': 'first'
+            }).reset_index()
+
+            feature_dfs = [content_features, sign_features, area_features, messages_distribution_features]
+        else:
+            feature_dfs = [content_features, sign_features, messages_distribution_features]
+
         for i, feature_df in enumerate(feature_dfs):
             all_features = all_features.merge(feature_df, on='id', how='left')
         for col in all_features.columns:
@@ -416,7 +456,7 @@ class DataProcessor:
                 all_features[col] = all_features[col].fillna(0)
         return all_features
 
-    def create_sign_sequences(self, data: pd.DataFrame, max_seq_len: int = 20, mapping_path: str = None, is_train: bool = True, oov_id: int = 0):
+    def create_sign_sequences(self, data: pd.DataFrame, max_seq_len: int = 20, data_tag: str = 'demo', is_train: bool = True, oov_id: int = 0):
         """
         For each user, generate a sign id sequence (ordered by datetime from newest to oldest, not deduplicated),
         assign a unique id to each sign, save/load the id-sign mapping dict, and return a DataFrame with user id and sign id sequence (for model embedding input).
@@ -429,22 +469,21 @@ class DataProcessor:
             pd.DataFrame: Columns ['id', 'sign_id_seq_0', ..., 'sign_id_seq_{max_seq_len-1}']
         """
         data_sorted = data.sort_values(['id', 'datetime'], ascending=[True, False])
-        if mapping_path is None:
-            mapping_path = f'{self.root_path}/data/resources/sign_id_map.json'
-        Path(os.path.dirname(mapping_path)).mkdir(parents=True, exist_ok=True)
+        vocab_path = f'{self.vocab_path}/sign_id_map.json'
+        Path(os.path.dirname(vocab_path)).mkdir(parents=True, exist_ok=True)
 
         if is_train:
             sign_list = data_sorted['sign'].dropna().unique().tolist()
-            sign2id = {sign: idx+1 for idx, sign in enumerate(sign_list)}  # 0 for padding
-            with open(mapping_path, 'w', encoding='utf-8') as f:
+            sign2id = {sign: idx+2 for idx, sign in enumerate(sign_list)}  # 0 for padding, 1 for unknown
+            with open(vocab_path, 'w', encoding='utf-8') as f:
                 json.dump(sign2id, f, ensure_ascii=False)
-            self.logger.info(f'Sign to id mapping saved to {mapping_path}, total unique signs: {len(sign2id)}')
+            self.logger.info(f'Train mode: Sign to id mapping saved to {vocab_path}, total unique signs: {len(sign2id)}')
         else:
-            if not os.path.exists(mapping_path):
-                raise FileNotFoundError(f"Sign id mapping file not found: {mapping_path}")
-            with open(mapping_path, 'r', encoding='utf-8') as f:
+            if not os.path.exists(vocab_path):
+                raise FileNotFoundError(f"Sign id mapping file not found: {vocab_path}")
+            with open(vocab_path, 'r', encoding='utf-8') as f:
                 sign2id = json.load(f)
-            self.logger.info(f'Sign to id mapping loaded from {mapping_path}, total unique signs: {len(sign2id)}')
+            self.logger.info(f'Inference mode: Sign to id mapping loaded from {vocab_path}, total unique signs: {len(sign2id)}')
 
         user_sign_seqs = data_sorted.groupby('id')['sign'].apply(list)
 
@@ -493,8 +532,8 @@ class DataProcessor:
                 except Exception:
                     static_matrix = np.array(static_matrix)
 
-                joblib.dump(vectorizer, f'{self.static_vec_model_path}/{self.static_vec}_model.pkl')
-                self.logger.info(f'Static vectorizer saved: {self.static_vec_model_path}/{self.static_vec}_model.pkl')
+                joblib.dump(vectorizer, f'{self.static_vec_path}/{self.static_vec}.pkl')
+                self.logger.info(f'Static vectorizer saved: {self.static_vec_path}/{self.static_vec}.pkl')
 
             elif self.static_vec == 'word2vec':
                 self.logger.info(f'Using Word2Vec vectorizer')
@@ -535,12 +574,12 @@ class DataProcessor:
                     user_vectors.append(user_vector)
                 static_matrix = np.array(user_vectors)
 
-                vectorizer.save(f'{self.static_vec_model_path}/{self.static_vec}_model.bin')
-                self.logger.info(f'Word2Vec model saved: {self.static_vec_model_path}/{self.static_vec}_model.bin')
+                vectorizer.save(f'{self.static_vec_path}/{self.static_vec}.bin')
+                self.logger.info(f'Word2Vec model saved: {self.static_vec_path}/{self.static_vec}.bin')
 
         else:
             if self.static_vec == 'tf-idf':
-                model_file = f'{self.static_vec_model_path}/{self.static_vec}_model.pkl'
+                model_file = f'{self.static_vec_path}/{self.static_vec}.pkl'
                 if not os.path.exists(model_file):
                     raise FileNotFoundError(f"TF-IDF model file not found: {model_file}")
                 vectorizer = joblib.load(model_file)
@@ -549,7 +588,7 @@ class DataProcessor:
                 if hasattr(static_matrix, 'toarray'):
                     static_matrix = static_matrix.toarray()
             elif self.static_vec == 'word2vec':
-                model_file = f'{self.static_vec_model_path}/{self.static_vec}_model.bin'
+                model_file = f'{self.static_vec_path}/{self.static_vec}.bin'
                 if not os.path.exists(model_file):
                     raise FileNotFoundError(f"Word2Vec model file not found: {model_file}")
                 vectorizer = Word2Vec.load(model_file)
@@ -601,7 +640,12 @@ class DataProcessor:
         self.logger.info(f'Extra features shape: {data_features_extra.shape}')
 
         # create sign id sequences
-        data_sign_sequences = self.create_sign_sequences(data, max_seq_len=self.sign_id_sequences_max_len)
+        data_sign_sequences = self.create_sign_sequences(data=data, 
+                                                         max_seq_len=self.sign_id_sequences_max_len, 
+                                                         data_tag=data_tag,
+                                                         oov_id=1,
+                                                         is_train=is_training)
+        
         self.logger.info(f'Sign id sequences created, shape: {data_sign_sequences.shape}')
 
         for data in [data_static_vec, data_dynamic_vec, data_features_extra, data_sign_sequences]:
@@ -616,16 +660,11 @@ class DataProcessor:
 
         # merge labels
         if is_training and df_label is not None:
-            df_features = df_features.merge(
-                df_label,
-                on='id',
-                how='left'
-            )
-            
+            df_features = df_features.merge(df_label, on='id', how='left')
         if chunk_id is not None:
-            output_path = f'{self.root_path}/data/preproceed/{data_tag}_chunk_{chunk_id}.csv'
+            output_path = f'{self.root_path}/data/preproceed/{self.project}/{data_tag}_chunk_{chunk_id}.csv'
         else:
-            output_path = f'{self.root_path}/data/preproceed/{data_tag}.csv'
+            output_path = f'{self.root_path}/data/preproceed/{self.project}/{data_tag}.csv'
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         df_features.to_csv(output_path, index=False)
@@ -637,14 +676,24 @@ class DataProcessor:
                    enc_col: str|None = None,
                    data_tag: str = '',
                    chunk_size: int = 200000):  
+        
         self.logger.info(f'Starting preprocessing for data: {data_path}, data_tag: {data_tag}, chunk_size: {chunk_size}')
-        output_file_path = f'{self.root_path}/data/preproceed/{data_tag}.csv'
-        if os.path.exists(output_file_path):
-            self.logger.info(f'Output file already exists: {output_file_path}, skip preprocessing.')
-            return output_file_path
-
+        output_file_path = f'{self.root_path}/data/preproceed/{self.project}/{data_tag}.csv'
         is_training = False
-        data = pd.read_csv(data_path, encoding='utf-8', on_bad_lines='skip')
+        
+        if has_header(data_path):
+            data = pd.read_csv(
+                data_path,
+                encoding='utf-8',
+                on_bad_lines='skip'
+            )
+        else:
+            data = pd.read_csv(
+                data_path,
+                encoding='utf-8',
+                on_bad_lines='skip',
+                names=['phone_id', 'message', 'sign', 'datetime']
+            )
 
         if self.use_aes and enc_col:
             self.logger.info(f'Using AES encryption for column: "{enc_col}", transforming to column: "id" ')
@@ -665,6 +714,7 @@ class DataProcessor:
                 data_tag=data_tag
             )
         else:
+            # infer mode multi-batch
             if total_rows > chunk_size:
                 self.logger.info(f'Total rows: {total_rows}, preprocessing in chunks of {chunk_size} rows')
                 chunk_files_path = []
@@ -695,6 +745,7 @@ class DataProcessor:
                     gc.collect()
                 self.logger.info(f'All chunks written to {output_file_path}')
             else:
+                # infer mode single batch
                 self.preprocess_batch(
                     data=data,
                     is_training=is_training,

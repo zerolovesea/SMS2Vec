@@ -11,8 +11,8 @@ if __name__ == "__main__":
     sign_vocab_size = max(sign_id_vocab.values()) + 1
 
     config = {
-        'data_path': "data/preproceed/demo_train_qwen3_w2v_mean_sign_sequences.csv",
-        'model_tag': 'DNN_QWEN3_W2V_mean_sign_sequences',
+        'data_path': "data/preproceed/train_qwen3_w2v_mean_sign_seq_hfq_credit.csv",
+        'model_tag': 'DNN_QWEN3_W2V_mean_sign_seq_HFQ_ABSEED',
         'label_col': 'label',
         'batch_size': 64,
         'epochs': 50,
