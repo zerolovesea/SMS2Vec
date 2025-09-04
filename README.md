@@ -33,42 +33,38 @@ ID can be duplicated, and each row contain an unique message record.
 
 ## Usage
 
-### 1. Data Preprocessing
-Edit `processing_config.yaml` to set preprocessing options (encryption, filtering, feature extraction, etc).
-Run:
-```bash
-python main.py
-```
-This will process raw data (e.g., `data/raw/messages.csv`) and output preprocessed features to `data/preproceed/`.
+You can run the entire pipeline by executing `main.py`, which covers:
 
-### 2. Model Training
-Edit `train.py` to set training parameters and model configuration.
-Run:
-```bash
-python train.py
-```
-This will train an MLP model using the processed data and save the model to `model/models/`.
+1. Data preprocessing
+2. Model training
+3. Inference (prediction)
 
-### 3. Prediction
-Edit `predict.py` to set the input data and model path.
-Run:
-```bash
-python predict.py
-```
-This will generate predictions and save results to `data/predict/`.
+#### Steps
 
-## Features
-- Configurable preprocessing: AES encryption, filtering, keyword extraction
-- Static and dynamic text embeddings: Word2Vec, TF-IDF, Qwen3, BGE-M3
+1. Prepare your raw data files (e.g. `data/raw/train_data.csv` and `data/raw/predict_data.csv`) and configure `processing_config.yaml` as needed.
+2. Install dependencies:
+	```bash
+	pip install -r requirements.txt
+	```
+
+3. Run the main program:
+	```bash
+	python main.py
+	```
+
+The program will automatically:
+- Preprocess data (encryption, filtering, feature engineering, etc.)
+- Train a deep learning model (DNN, with optional signature sequence features)
+- Run inference on prediction data and output results
+
+For custom workflows, refer to `main.py` and modules in the `src/` directory.
 - Deep learning model training: MLP with flexible architecture
 - Easy-to-modify configuration via YAML and Python scripts
 - Supports large-scale data and chunked processing
 
 ## Directory Structure
-- `main.py`: Data preprocessing entry
-- `train.py`: Model training entry
-- `predict.py`: Prediction entry
-- `src/`: Core modules (config, data processing, training, logging)
+- `main.py`: Data preprocessing/Trainer entry
+- `src/`: Core modules (config, data processing, training, logging, etc.)
 - `model/`: Model files and deep learning modules
 - `data/`: Raw, processed, and prediction data
 - `requirements.txt`: Python dependencies
